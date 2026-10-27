@@ -72,6 +72,9 @@ def triangulate(
         raise TypeError("expression must be a pandas DataFrame")
     if not isinstance(contacts, pd.DataFrame) or not isinstance(lr_table, pd.DataFrame):
         raise TypeError("contacts and lr_table must be pandas DataFrames")
+    conflicts = sorted({"sample_id", "group", "reference_identity"}.intersection(lr_table.columns))
+    if conflicts:
+        raise ValueError(f"lr_table contains reserved evidence columns: {', '.join(conflicts)}")
     group_name, candidates, references = _group_parts(group)
     bucket_cells = [str(cell_id) for cell_id in stage1_labels.index[stage1_labels.astype(str) == group_name]]
     labels = pd.Series(group_name, index=bucket_cells, dtype=object, name="final_label")

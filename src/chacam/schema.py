@@ -13,6 +13,22 @@ import pandas as pd
 import yaml
 
 
+RESERVED_LABEL = "unassigned"
+RESERVED_LR_COLUMNS = frozenset(
+    {
+        "reference_cell",
+        "bucket_cell",
+        "contribution",
+        "sample_id",
+        "group",
+        "reference_identity",
+        "fold",
+        "selection",
+        "effect",
+    }
+)
+
+
 @dataclass(frozen=True)
 class AmbiguityGroup:
     name: str
@@ -130,6 +146,9 @@ def _parse_ambiguity_groups(raw: Any) -> tuple[AmbiguityGroup, ...]:
             raise ValueError(f"ambiguity group {name} must have at least one reference")
         if len(set(references_raw)) != len(references_raw):
             raise ValueError(f"ambiguity group {name} has duplicate references")
+        group_identities = [name, *(str(value) for value in candidates_raw), *(str(value) for value in references_raw)]
+        if RESERVED_LABEL in group_identities:
+            raise ValueError(f"{RESERVED_LABEL!r} is a reserved label name; rename it")
         groups.append(
             AmbiguityGroup(
                 name=name,
@@ -327,6 +346,8 @@ def load_inputs(config: RunConfig) -> Inputs:
 
     expression_raw = _read_cell_table(config.inputs.expression, "expression.csv", {"cell_id"})
     cells_raw = _read_cell_table(config.inputs.cells, "cells.csv", {"cell_id", "sample_id", "label"})
+    if cells_raw["label"].astype(str).eq(RESERVED_LABEL).any():
+        raise ValueError(f"{RESERVED_LABEL!r} is a reserved label name; rename the cell label")
     expression_genes = [str(column) for column in expression_raw.columns if column != "cell_id"]
     if len(expression_genes) != len(set(expression_genes)):
         duplicates = sorted({gene for gene in expression_genes if expression_genes.count(gene) > 1})
@@ -373,6 +394,13 @@ def load_inputs(config: RunConfig) -> Inputs:
 
     lr_pairs_raw = _read_csv_with_unique_header(config.inputs.lr_pairs, "lr_pairs.csv")
     _require_columns(lr_pairs_raw, {"ligand", "receptor"}, "lr_pairs.csv")
+    reserved_lr_columns = sorted(set(lr_pairs_raw.columns).intersection(RESERVED_LR_COLUMNS))
+    if reserved_lr_columns:
+        raise ValueError(
+            "lr_pairs.csv contains reserved output columns: "
+            + ", ".join(reserved_lr_columns)
+            + "; rename them"
+        )
     lr_pairs = lr_pairs_raw.copy()
     lr_pairs["ligand"] = lr_pairs["ligand"].astype(str)
     lr_pairs["receptor"] = lr_pairs["receptor"].astype(str)

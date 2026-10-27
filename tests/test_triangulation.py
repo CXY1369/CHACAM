@@ -173,3 +173,18 @@ def test_triangulate_finds_contact_when_contact_columns_are_reversed_and_keeps_s
     assert result.labels.to_dict() == {"u": "A1", "v": "A2"}
     assert set(result.evidence["sample_id"]) == {"explicit-sample"}
     assert result.evidence["pathway"].tolist() == ["p1", "p2", "p1", "p2", "p1", "p2", "p1", "p2"]
+
+
+@pytest.mark.parametrize("column", ["sample_id", "group", "reference_identity"])
+def test_triangulate_rejects_reserved_evidence_columns_with_clear_error(column):
+    labels, expression = _resolvable_inputs()
+    lr_table = _lr_table()
+    lr_table[column] = "existing"
+
+    with pytest.raises(ValueError) as error:
+        triangulate(labels, expression, GROUP, _contacts(), lr_table, "none", "both", sample_id="s")
+
+    message = str(error.value)
+    assert "reserved" in message
+    assert column in message
+    assert "cannot insert" not in message

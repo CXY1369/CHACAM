@@ -15,6 +15,16 @@ def _numeric_expression(expression: pd.DataFrame) -> pd.DataFrame:
     values = numeric.to_numpy(dtype=float)
     if numeric.isna().any().any() or not np.isfinite(values).all():
         raise ValueError("expression contains non-finite values")
+    index_names = [str(value) for value in numeric.index]
+    column_names = [str(value) for value in numeric.columns]
+    duplicate_index = pd.Index(index_names)[pd.Index(index_names).duplicated()].unique().tolist()
+    duplicate_columns = pd.Index(column_names)[pd.Index(column_names).duplicated()].unique().tolist()
+    if duplicate_index:
+        raise ValueError(f"expression index has duplicate names after string conversion: {duplicate_index}")
+    if duplicate_columns:
+        raise ValueError(f"expression columns have duplicate names after string conversion: {duplicate_columns}")
+    numeric.index = index_names
+    numeric.columns = column_names
     return numeric
 
 
@@ -48,6 +58,10 @@ def score_pairs(
         raise ValueError("direction must be both, ref_to_cand, or cand_to_ref")
     if transform not in {"none", "log1p"}:
         raise ValueError("transform must be none or log1p")
+    reserved_output_columns = {"reference_cell", "bucket_cell", "contribution"}
+    conflicts = sorted(reserved_output_columns.intersection(lr_pairs.columns))
+    if conflicts:
+        raise ValueError(f"lr_pairs contains reserved output columns: {', '.join(conflicts)}")
 
     expression_ids = set(expression.index.astype(str))
     gene_names = set(expression.columns.astype(str))
@@ -100,11 +114,14 @@ def select_lr(lr_pairs: pd.DataFrame, mode: str) -> pd.DataFrame:
 
     if not isinstance(lr_pairs, pd.DataFrame):
         raise TypeError("lr_pairs must be a pandas DataFrame")
+    conflicts = sorted({"selection", "effect"}.intersection(lr_pairs.columns))
+    if conflicts:
+        raise ValueError(f"lr_pairs contains reserved output columns: {', '.join(conflicts)}")
     if mode == "given":
         selected = lr_pairs.copy()
         selected["selection"] = "given"
         selected["effect"] = np.nan
         return selected
     if mode == "train_topk":
-        raise NotImplementedError("train_topk is an M3 实现")
+        raise NotImplementedError("train_topk is implemented in M3")
     raise ValueError("mode must be given or train_topk")
