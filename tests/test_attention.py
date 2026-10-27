@@ -47,6 +47,15 @@ def test_attention_is_invariant_to_target_gene_column_order():
     pd.testing.assert_frame_equal(ordered.L, shuffled.L)
 
 
+def test_attention_used_genes_follow_reference_column_order():
+    target = pd.DataFrame([[1.0, 2.0, 3.0]], index=["c1"], columns=["g1", "g2", "g3"])
+    reference = pd.DataFrame([[2.0, 1.0, 3.0]], index=["r1"], columns=["g3", "g1", "g2"])
+
+    result = attention(target, reference, normalization="l1")
+
+    assert result.used_genes == ["g3", "g1", "g2"]
+
+
 def test_l1_rejects_negative_similarity_with_softmax_hint():
     with pytest.raises(ValueError, match="softmax"):
         l1_normalize(pd.DataFrame([[1.0, -0.1]], columns=["a", "b"]))
