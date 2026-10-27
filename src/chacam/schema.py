@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -182,6 +183,8 @@ def load_config(path: str | Path) -> RunConfig:
         if not isinstance(temperature, (int, float)) or isinstance(temperature, bool) or not np.isfinite(temperature):
             raise ValueError("attention.temperature must be finite")
         temperature = float(temperature)
+    if normalization == "softmax" and (temperature is None or temperature <= 0):
+        raise ValueError("attention.temperature must be positive for softmax")
     attention = AttentionConfig(normalization=normalization, temperature=temperature)
 
     assignment_raw = _required_mapping(raw, "assignment", "assignment")
@@ -235,7 +238,7 @@ def _require_columns(frame: pd.DataFrame, columns: set[str], table_name: str) ->
 
 
 def _read_cell_table(path: Path, table_name: str, required: set[str]) -> pd.DataFrame:
-    frame = pd.read_csv(path)
+    frame = _read_csv_with_unique_header(path, table_name)
     _require_columns(frame, required, table_name)
     if frame["cell_id"].isna().any():
         raise ValueError(f"{table_name} contains a missing cell_id")
@@ -244,6 +247,17 @@ def _read_cell_table(path: Path, table_name: str, required: set[str]) -> pd.Data
         raise ValueError(f"duplicate cell_id in {table_name}: {', '.join(duplicate_ids)}")
     frame["cell_id"] = frame["cell_id"].astype(str)
     return frame
+
+
+def _read_csv_with_unique_header(path: Path, table_name: str) -> pd.DataFrame:
+    with path.open(newline="", encoding="utf-8") as handle:
+        header = next(csv.reader(handle), None)
+    if header is None:
+        raise ValueError(f"{table_name} is empty")
+    duplicates = sorted({name for name in header if header.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate column name in {table_name}: {', '.join(duplicates)}")
+    return pd.read_csv(path)
 
 
 def _canonical_pair(first: str, second: str) -> tuple[str, str]:
@@ -343,7 +357,7 @@ def load_inputs(config: RunConfig) -> Inputs:
     if cells_raw["sample_id"].nunique() < 2:
         raise ValueError("sample_id must contain at least two samples")
 
-    features = pd.read_csv(config.inputs.features)
+    features = _read_csv_with_unique_header(config.inputs.features, "features.csv")
     _require_columns(features, {"gene"}, "features.csv")
     features = features.copy()
     features["gene"] = features["gene"].astype(str)
@@ -356,7 +370,7 @@ def load_inputs(config: RunConfig) -> Inputs:
     if config.reference.mode == "binary_marker" and "label" not in features.columns:
         raise ValueError("features.csv requires a label column for binary_marker")
 
-    lr_pairs_raw = pd.read_csv(config.inputs.lr_pairs)
+    lr_pairs_raw = _read_csv_with_unique_header(config.inputs.lr_pairs, "lr_pairs.csv")
     _require_columns(lr_pairs_raw, {"ligand", "receptor"}, "lr_pairs.csv")
     lr_pairs = lr_pairs_raw.copy()
     lr_pairs["ligand"] = lr_pairs["ligand"].astype(str)
@@ -380,7 +394,7 @@ def load_inputs(config: RunConfig) -> Inputs:
             keep_rows.append(row)
     lr_pairs = pd.DataFrame(keep_rows, columns=lr_pairs.columns).reset_index(drop=True)
 
-    contacts_raw = pd.read_csv(config.inputs.contacts)
+    contacts_raw = _read_csv_with_unique_header(config.inputs.contacts, "contacts.csv")
     contacts = _validate_contacts(contacts_raw, config.ambiguity_groups)
     cells = cells_raw.set_index("cell_id")
     expression = expression.set_index("cell_id")

@@ -100,6 +100,13 @@ def test_load_config_requires_cci_transform(tmp_path):
         load_config(_write_config(tmp_path, **{"cci.transform": None}))
 
 
+@pytest.mark.parametrize("temperature", [0, -1])
+def test_load_config_rejects_nonpositive_softmax_temperature(tmp_path, temperature):
+    _write_tables(tmp_path)
+    with pytest.raises(ValueError, match="temperature"):
+        load_config(_write_config(tmp_path, **{"attention.normalization": "softmax", "attention.temperature": temperature}))
+
+
 @pytest.mark.parametrize(
     ("section_key", "value"),
     [
@@ -136,6 +143,16 @@ def test_duplicate_expression_cell_id_is_rejected(tmp_path):
         {"cell_id": ["c1", "c1", "c2", "c3"], "g1": [1, 2, 3, 4], "g2": [1, 2, 3, 4]}
     ))
     with pytest.raises(ValueError, match="c1"):
+        load_inputs(load_config(_write_config(tmp_path)))
+
+
+def test_duplicate_expression_gene_header_is_rejected(tmp_path):
+    expression = pd.DataFrame(
+        [["c1", 1, 2], ["c2", 2, 1], ["c3", 3, 1], ["c4", 4, 1]],
+        columns=["cell_id", "marker_A1_1", "marker_A1_1"],
+    )
+    _write_tables(tmp_path, expression=expression)
+    with pytest.raises(ValueError, match="marker_A1_1"):
         load_inputs(load_config(_write_config(tmp_path)))
 
 
@@ -272,4 +289,3 @@ def test_load_truth_is_explicit_and_validates_cell_ids(tmp_path):
     truth = load_truth(truth_path)
     assert list(truth.columns) == ["true_label"]
     assert list(truth.index) == ["c1", "c2"]
-

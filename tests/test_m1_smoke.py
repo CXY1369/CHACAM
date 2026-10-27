@@ -13,7 +13,7 @@ def test_synthetic_leave_one_sample_smoke_assignment():
     training_cells = data.cells[data.cells["sample_id"] != target_sample].set_index("cell_id")
     expression = data.expression.set_index("cell_id")
     genes = list(data.marker_genes)
-    profiles = training_mean(expression.loc[training_cells.index], training_cells["label"], genes)
+    profiles = training_mean(expression.loc[training_cells.index], training_cells["label"], genes, expected_labels=sorted(training_cells["label"].unique()))
     result = attention(expression.loc[target_cells.index, genes], profiles, normalization="l1")
     assigned = greedy_assign(result.L, capacities(profiles.index, [{"name": "Ax", "candidates": ["A1", "A2"], "references": ["R1", "R2"]}], "unique"))
 

@@ -1,7 +1,9 @@
 from pathlib import Path
+from itertools import combinations
 
 import numpy as np
 import pandas as pd
+import pytest
 import yaml
 
 from chacam.schema import load_config, load_inputs
@@ -62,25 +64,97 @@ def test_synthetic_write_output_passes_all_input_validation(tmp_path):
     assert inputs.dropped_lr_pairs == []
 
 
-def test_contact_signal_changes_contacted_candidate_receptor_expression_only():
-    positive = make_synthetic(seed=21, n_samples=40, contact_signal=True)
-    negative = make_synthetic(seed=21, n_samples=40, contact_signal=False)
+def _contact_lookup(data):
+    return {
+        frozenset((row.identity_a, row.identity_b)): float(row.contact)
+        for row in data.contacts.itertuples()
+    }
 
-    def candidate_receptor_difference(data):
+
+def _fine_identity_lr_effects(data):
+    expression = data.expression.set_index("cell_id")
+    cells = data.cells.set_index("cell_id")
+    contacts = _contact_lookup(data)
+    lr_pairs = list(data.lr_pairs.itertuples(index=False))
+    scores = {f"{pair.ligand}/{pair.receptor}": {True: [], False: []} for pair in lr_pairs}
+    for sample_id, sample_cells in cells.groupby("sample_id", sort=False):
+        fine_cells = sample_cells[sample_cells["label"] != "Ax"]
+        for first_id, second_id in combinations(fine_cells.index, 2):
+            first_label = fine_cells.loc[first_id, "label"]
+            second_label = fine_cells.loc[second_id, "label"]
+            contact = contacts[frozenset((first_label, second_label))] > 0
+            for pair in lr_pairs:
+                weight = getattr(pair, "weight", 1.0)
+                forward = np.log1p(expression.loc[first_id, pair.ligand]) * np.log1p(expression.loc[second_id, pair.receptor])
+                reverse = np.log1p(expression.loc[second_id, pair.ligand]) * np.log1p(expression.loc[first_id, pair.receptor])
+                scores[f"{pair.ligand}/{pair.receptor}"][contact].append(float(weight) * (forward + reverse))
+    return {
+        pair_name: np.mean(values[True]) - np.mean(values[False])
+        for pair_name, values in scores.items()
+    }
+
+
+def test_synthetic_contact_signal_supports_d13_topk_learning():
+    data = make_synthetic(seed=0, n_samples=20, contact_signal=True)
+    effects = _fine_identity_lr_effects(data)
+    signal_effects = [effects["lig_R1/rec_R1"], effects["lig_R2/rec_R2"]]
+    decoy_effects = [effect for name, effect in effects.items() if "/rec_decoy" in name]
+
+    assert min(signal_effects) > 0.5
+    assert min(signal_effects) > max(decoy_effects)
+
+
+def test_candidate_receptor_differences_depend_on_contact_signal():
+    positive = make_synthetic(seed=21, n_samples=20, contact_signal=True)
+    negative = make_synthetic(seed=21, n_samples=20, contact_signal=False)
+
+    def candidate_receptor_means(data):
         cells = data.cells.merge(data.truth, on="cell_id")
-        means = data.expression.merge(cells[["cell_id", "true_label"]], on="cell_id").groupby("true_label").mean(numeric_only=True)
-        return float(means.loc["A1", "receptor_A1"] - means.loc["A2", "receptor_A1"])
+        return data.expression.merge(cells[["cell_id", "true_label"]], on="cell_id").groupby("true_label").mean(numeric_only=True)
 
-    assert candidate_receptor_difference(positive) > 8.0
-    assert abs(candidate_receptor_difference(negative)) < 3.0
+    positive_means = candidate_receptor_means(positive)
+    negative_means = candidate_receptor_means(negative)
+    assert positive_means.loc["A1", "rec_R1"] - positive_means.loc["A2", "rec_R1"] > 8.0
+    assert positive_means.loc["A2", "rec_R2"] - positive_means.loc["A1", "rec_R2"] > 8.0
+    assert abs(negative_means.loc["A1", "rec_R1"] - negative_means.loc["A2", "rec_R1"]) < 5.0
+    assert abs(negative_means.loc["A2", "rec_R2"] - negative_means.loc["A1", "rec_R2"]) < 5.0
+
+
+def test_contact_signal_modes_share_background_and_receptor_draw_totals():
+    positive = make_synthetic(seed=21, n_samples=5, contact_signal=True)
+    negative = make_synthetic(seed=21, n_samples=5, contact_signal=False)
+    non_receptor_genes = [gene for gene in positive.expression.columns if gene != "cell_id" and not gene.startswith("rec_")]
+    receptor_genes = [gene for gene in positive.expression.columns if gene.startswith("rec_")]
+    pd.testing.assert_frame_equal(positive.expression[["cell_id", *non_receptor_genes]], negative.expression[["cell_id", *non_receptor_genes]])
+    np.testing.assert_array_equal(
+        positive.expression[receptor_genes].sum(axis=1).to_numpy(),
+        negative.expression[receptor_genes].sum(axis=1).to_numpy(),
+    )
 
 
 def test_synthetic_contacts_include_explicit_positive_and_negative_pairs():
-    data = make_synthetic(seed=2, n_samples=3)
-    assert set(data.contacts["contact"]) >= {0, 1}
-    for reference, candidate in [("R1", "A1"), ("R2", "A2")]:
-        row = data.contacts[
-            ((data.contacts["identity_a"] == reference) & (data.contacts["identity_b"] == candidate))
-            | ((data.contacts["identity_a"] == candidate) & (data.contacts["identity_b"] == reference))
+    data = make_synthetic(seed=2, n_samples=3, n_extra_identities=6)
+    expected_positive = {
+        frozenset(pair)
+        for pair in [
+            ("R1", "A1"), ("R2", "A2"),
+            ("R1", "B1"), ("R1", "B2"), ("R1", "B3"),
+            ("R2", "B3"), ("R2", "B4"), ("R2", "B5"),
+            ("B1", "B2"), ("B3", "B4"), ("B5", "B6"),
         ]
-        assert len(row) == 1 and row.iloc[0]["contact"] > 0
+    }
+    actual = {
+        frozenset((row.identity_a, row.identity_b)): float(row.contact)
+        for row in data.contacts.itertuples()
+    }
+    fine_identities = {"R1", "R2", "B1", "B2", "B3", "B4", "B5", "B6"}
+    fine_pairs = {pair: value for pair, value in actual.items() if pair.issubset(fine_identities)}
+    assert len(actual) == 45
+    assert len(fine_pairs) == 28
+    assert {pair for pair, value in actual.items() if value > 0} == expected_positive
+    assert all(value == 0 for pair, value in actual.items() if pair not in expected_positive)
+
+
+def test_synthetic_requires_six_extra_identities():
+    with pytest.raises(ValueError, match="six|6"):
+        make_synthetic(seed=2, n_samples=3, n_extra_identities=5)

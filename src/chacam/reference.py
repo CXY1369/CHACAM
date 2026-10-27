@@ -31,10 +31,8 @@ def _label_series(labels: pd.Series | Iterable[str], index: pd.Index) -> pd.Seri
             aligned = labels.copy()
         elif set(index).issubset(set(labels.index)):
             aligned = labels.reindex(index)
-        elif len(labels) == len(index):
-            aligned = pd.Series(labels.to_numpy(), index=index)
         else:
-            raise ValueError("labels cannot be aligned to expression rows")
+            raise ValueError("labels cannot be aligned to expression rows by cell ID")
     else:
         values = list(labels)
         if len(values) != len(index):
@@ -56,6 +54,8 @@ def training_mean(
     expression: pd.DataFrame,
     labels: pd.Series | Iterable[str],
     genes: Iterable[str],
+    *,
+    expected_labels: Iterable[str],
 ) -> ReferenceProfiles:
     """Build one mean expression row for each observed label."""
 
@@ -64,7 +64,10 @@ def training_mean(
     values = expression.loc[:, used].apply(pd.to_numeric, errors="raise")
     profiles = values.assign(_label=aligned_labels).groupby("_label", sort=False, observed=False).mean()
     profiles.index.name = "identity"
-    return _set_metadata(profiles, used, missing, missing_labels=[])
+    expected = list(dict.fromkeys(str(label) for label in expected_labels))
+    observed = set(aligned_labels.tolist())
+    missing_labels = [label for label in expected if label not in observed]
+    return _set_metadata(profiles, used, missing, missing_labels=missing_labels)
 
 
 def _group_parts(group: object) -> tuple[str, tuple[str, ...]]:
@@ -114,4 +117,4 @@ def binary_marker(
         rows.append(row)
     profiles = pd.DataFrame(rows, index=label_order, columns=used, dtype=int)
     profiles.index.name = "identity"
-    return _set_metadata(profiles, used, missing, zero_labels=zero_labels, missing_labels=[])
+    return _set_metadata(profiles, used, missing, zero_labels=zero_labels)

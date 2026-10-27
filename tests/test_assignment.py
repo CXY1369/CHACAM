@@ -61,6 +61,14 @@ def test_zero_values_and_insufficient_capacity_are_unassigned():
     assert (result.labels == "unassigned").sum() == 1
 
 
+def test_positive_cells_beyond_exhausted_unique_capacity_are_unassigned():
+    l = pd.DataFrame([[0.9, 0.8], [0.7, 0.6], [0.5, 0.4]], index=["c1", "c2", "c3"], columns=["a", "b"])
+    result = greedy_assign(l, {"a": 1, "b": 1})
+    assert (result.labels != "unassigned").sum() == 2
+    assert set(result.labels[result.labels != "unassigned"]) == {"a", "b"}
+    assert result.labels.loc["c3"] == "unassigned"
+
+
 def test_exact_ties_are_deterministic_and_marked_in_trace():
     l = pd.DataFrame([[0.5, 0.5], [0.5, 0.1]], index=["c1", "c2"], columns=["a", "b"])
     first = greedy_assign(l, {"a": 1, "b": 1})

@@ -12,7 +12,7 @@ def test_training_mean_groups_observed_labels_and_records_gene_alignment():
         columns=["g2", "g1", "extra"],
     )
     labels = pd.Series(["Ax", "Ax", "R1"], index=expression.index)
-    profiles = training_mean(expression, labels, ["g1", "missing", "g2"])
+    profiles = training_mean(expression, labels, ["g1", "missing", "g2"], expected_labels=["Ax", "R1"])
 
     assert list(profiles.index) == ["Ax", "R1"]
     assert list(profiles.columns) == ["g1", "g2"]
@@ -21,6 +21,34 @@ def test_training_mean_groups_observed_labels_and_records_gene_alignment():
     assert profiles.attrs["used_feature_genes"] == ["g1", "g2"]
     assert profiles.attrs["missing_feature_genes"] == ["missing"]
     assert profiles.attrs["missing_labels"] == []
+
+
+def test_training_mean_records_expected_labels_missing_from_training_fold():
+    expression = pd.DataFrame([[1, 2]], index=["c1"], columns=["g1", "g2"])
+    labels = pd.Series(["A"], index=["c1"])
+    profiles = training_mean(expression, labels, ["g1", "g2"], expected_labels=["A", "B"])
+    assert list(profiles.index) == ["A"]
+    assert profiles.attrs["missing_labels"] == ["B"]
+
+
+def test_series_labels_with_unmatched_ids_are_rejected_instead_of_positionally_paired():
+    expression = pd.DataFrame([[1, 2], [3, 4]], index=["c1", "c2"], columns=["g1", "g2"])
+    labels = pd.Series(["A", "B"], index=["other1", "other2"])
+    try:
+        training_mean(expression, labels, ["g1", "g2"], expected_labels=["A", "B"])
+    except ValueError as error:
+        assert "align" in str(error)
+    else:
+        raise AssertionError("unmatched Series IDs were accepted")
+
+
+def test_series_labels_are_aligned_by_id_when_order_is_shuffled():
+    expression = pd.DataFrame([[1, 2], [10, 20]], index=["c1", "c2"], columns=["g1", "g2"])
+    ordered = pd.Series(["A", "B"], index=["c1", "c2"])
+    shuffled = pd.Series(["B", "A"], index=["c2", "c1"])
+    first = training_mean(expression, ordered, ["g1", "g2"], expected_labels=["A", "B"])
+    second = training_mean(expression, shuffled, ["g1", "g2"], expected_labels=["A", "B"])
+    pd.testing.assert_frame_equal(first, second)
 
 
 def test_binary_marker_uses_ambiguity_candidate_union_and_records_zero_labels():

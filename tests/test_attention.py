@@ -29,8 +29,22 @@ def test_l1_normalization_matches_fig2_values_and_preserves_zero():
         [[0.0077, 0.32, 0.0014, 0.12], [0.045, 0.0056, 0.091, 0.18], [2.8e-07, 0.0044, 0.28, 0.092], [0.33, 0, 0.055, 0.022]]
     )
     for actual, expected in ((p_col.to_numpy(), p_col_fig), (p_row.to_numpy(), p_row_fig), (product.to_numpy(), l_fig)):
-        np.testing.assert_allclose(actual, expected, atol=0.015, rtol=0.05)
-    assert product.loc["c4", "EMS"] == 0
+        absolute_error = np.abs(actual - expected)
+        assert np.all(absolute_error <= 0.015)
+        nonzero = expected != 0
+        assert np.all(absolute_error[nonzero] / np.abs(expected[nonzero]) <= 0.05)
+        assert np.all(actual[~nonzero] == 0)
+
+
+def test_attention_is_invariant_to_target_gene_column_order():
+    target = pd.DataFrame([[1.0, 2.0, 3.0], [3.0, 1.0, 2.0]], index=["c1", "c2"], columns=["g1", "g2", "g3"])
+    reference = pd.DataFrame([[2.0, 1.0, 3.0], [1.0, 3.0, 2.0]], index=["r1", "r2"], columns=["g1", "g2", "g3"])
+    ordered = attention(target, reference, normalization="l1")
+    shuffled = attention(target[["g3", "g1", "g2"]], reference, normalization="l1")
+    pd.testing.assert_frame_equal(ordered.S, shuffled.S)
+    pd.testing.assert_frame_equal(ordered.P_col, shuffled.P_col)
+    pd.testing.assert_frame_equal(ordered.P_row, shuffled.P_row)
+    pd.testing.assert_frame_equal(ordered.L, shuffled.L)
 
 
 def test_l1_rejects_negative_similarity_with_softmax_hint():
