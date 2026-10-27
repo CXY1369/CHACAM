@@ -19,3 +19,7 @@ data/reference/*
 
 # Pipeline outputs
 runs/
+
+# Development process records: kept locally, not published
+docs/plans/
+docs/reviews/
