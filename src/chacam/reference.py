@@ -61,10 +61,16 @@ def training_mean(
 
     used, missing = _feature_alignment(expression.columns, genes)
     aligned_labels = _label_series(labels, expression.index)
+    expected = list(dict.fromkeys(str(label) for label in expected_labels))
+    expected_set = set(expected)
+    unexpected_labels = sorted(set(aligned_labels.tolist()) - expected_set)
+    if unexpected_labels:
+        raise ValueError(
+            "observed labels are not in expected_labels: " + ", ".join(unexpected_labels)
+        )
     values = expression.loc[:, used].apply(pd.to_numeric, errors="raise")
     profiles = values.assign(_label=aligned_labels).groupby("_label", sort=False, observed=False).mean()
     profiles.index.name = "identity"
-    expected = list(dict.fromkeys(str(label) for label in expected_labels))
     observed = set(aligned_labels.tolist())
     missing_labels = [label for label in expected if label not in observed]
     return _set_metadata(profiles, used, missing, missing_labels=missing_labels)

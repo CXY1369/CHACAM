@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -254,7 +255,7 @@ def _read_csv_with_unique_header(path: Path, table_name: str) -> pd.DataFrame:
         header = next(csv.reader(handle), None)
     if header is None:
         raise ValueError(f"{table_name} is empty")
-    duplicates = sorted({name for name in header if header.count(name) > 1})
+    duplicates = sorted(name for name, count in Counter(header).items() if count > 1)
     if duplicates:
         raise ValueError(f"duplicate column name in {table_name}: {', '.join(duplicates)}")
     return pd.read_csv(path)

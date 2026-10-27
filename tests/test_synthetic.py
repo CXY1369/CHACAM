@@ -158,3 +158,8 @@ def test_synthetic_contacts_include_explicit_positive_and_negative_pairs():
 def test_synthetic_requires_six_extra_identities():
     with pytest.raises(ValueError, match="six|6"):
         make_synthetic(seed=2, n_samples=3, n_extra_identities=5)
+
+
+def test_synthetic_requires_at_least_one_decoy_pair():
+    with pytest.raises(ValueError, match="n_decoy_pairs"):
+        make_synthetic(seed=0, n_samples=2, n_decoy_pairs=0)

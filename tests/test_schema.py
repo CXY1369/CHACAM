@@ -107,6 +107,16 @@ def test_load_config_rejects_nonpositive_softmax_temperature(tmp_path, temperatu
         load_config(_write_config(tmp_path, **{"attention.normalization": "softmax", "attention.temperature": temperature}))
 
 
+def test_load_config_rejects_explicit_null_softmax_temperature(tmp_path):
+    _write_tables(tmp_path)
+    config = _config_dict(tmp_path, **{"attention.normalization": "softmax"})
+    config["attention"]["temperature"] = None
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    with pytest.raises(ValueError, match="temperature"):
+        load_config(config_path)
+
+
 @pytest.mark.parametrize(
     ("section_key", "value"),
     [
@@ -148,11 +158,11 @@ def test_duplicate_expression_cell_id_is_rejected(tmp_path):
 
 def test_duplicate_expression_gene_header_is_rejected(tmp_path):
     expression = pd.DataFrame(
-        [["c1", 1, 2], ["c2", 2, 1], ["c3", 3, 1], ["c4", 4, 1]],
-        columns=["cell_id", "marker_A1_1", "marker_A1_1"],
+        [["c1", 1, 2, 3, 4], ["c2", 2, 1, 4, 3], ["c3", 3, 1, 5, 2], ["c4", 4, 1, 6, 1]],
+        columns=["cell_id", "g1", "g1", "g2", "g2"],
     )
     _write_tables(tmp_path, expression=expression)
-    with pytest.raises(ValueError, match="marker_A1_1"):
+    with pytest.raises(ValueError, match=r"g1.*g2"):
         load_inputs(load_config(_write_config(tmp_path)))
 
 

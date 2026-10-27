@@ -31,6 +31,17 @@ def test_training_mean_records_expected_labels_missing_from_training_fold():
     assert profiles.attrs["missing_labels"] == ["B"]
 
 
+def test_training_mean_rejects_observed_labels_outside_expected_labels():
+    expression = pd.DataFrame([[1, 2], [3, 4]], index=["c1", "c2"], columns=["g1", "g2"])
+    labels = pd.Series(["A", "B"], index=["c1", "c2"])
+    try:
+        training_mean(expression, labels, ["g1", "g2"], expected_labels=["A"])
+    except ValueError as error:
+        assert "B" in str(error)
+    else:
+        raise AssertionError("observed label outside expected_labels was accepted")
+
+
 def test_series_labels_with_unmatched_ids_are_rejected_instead_of_positionally_paired():
     expression = pd.DataFrame([[1, 2], [3, 4]], index=["c1", "c2"], columns=["g1", "g2"])
     labels = pd.Series(["A", "B"], index=["other1", "other2"])

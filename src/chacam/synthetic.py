@@ -73,8 +73,8 @@ def make_synthetic(
         raise ValueError("marker_genes_per_identity must be positive")
     if n_extra_identities < 6:
         raise ValueError("n_extra_identities must be at least six")
-    if n_decoy_pairs < 0:
-        raise ValueError("n_decoy_pairs must be nonnegative")
+    if n_decoy_pairs < 1:
+        raise ValueError("n_decoy_pairs must be at least 1")
     rng = np.random.default_rng(seed)
     extra = tuple(f"B{index}" for index in range(1, n_extra_identities + 1))
     identities = ("A1", "A2", "R1", "R2", *extra)
