@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+
+# Secrets
+.env
+
+# Author-provided reference data: large files stay local, only the manifest is tracked
+data/reference/*
+!data/reference/MANIFEST.md
+
+# Pipeline outputs
+runs/
