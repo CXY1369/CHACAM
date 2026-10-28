@@ -49,13 +49,26 @@
 
 丢弃细胞、基因行和 L–R 行的完整明细位于 `data/reference/derived/conversion_report.json`。
 
+## 已知局限
+
+- C 细胞中 r2、r7、r8 被删除；同一规则也适用于 MS，但本数据中的 MS 组均保留。第一阶段存在把其他细胞误分为 Ca 的可能性；运行脚本会输出参考诊断，但该诊断路径不提交。
+- MS/C 标签只由一个 `F19F10.1` 表达量和阈值决定；阈值具有数据依赖性，r3 的 st353 可能同时反映质量或 dropout 问题，因此它不是独立真值。
+- features 只有先验 marker，不含 Set7；`F19F10.1` 同时是 MS/C 标签驱动变量和 feature，因此第一阶段一致性是构造出来的。
+- `log1p` 转换是本项目的选择，不代表对原论文处理流程的复现。
+- `top_k=50` 仅用于探索，不代表显著性筛选。
+- 接触修正来自单胚胎观察和 M4 假设。
+
+本数据的模型拟合不发生标签泄漏：训练 fold 只使用参考细胞和 top-k 训练 fold；静态 features、L–R 和接触表不随 fold 重新估计。
+
+但预处理具有构造依赖：MS/C 标签和细胞删除使用每个胚胎自身的表达量，且阈值是在查看全部数据后选定的。
+
 ## 当前派生 CSV 的 SHA-256
 
 | 文件 | SHA-256 |
 |---|---|
 | `data/reference/derived/cells.csv` | `3ec49139a4d343fac80c2e2bf58e844efe45fffd35c76b3164f9a9b13b4a1f88` |
-| `data/reference/derived/expression.csv` | `53b53e7e0c9cc56de929942bb3b9db776db13ea61607fa34664a3fb83b37ded1` |
-| `data/reference/derived/features.csv` | `820d014a60c802ab07b72751d49758169740a393377f01c92f437711e274dede` |
+| `data/reference/derived/expression.csv` | `32fa9e278d6a0449f50edf3bce5b3595a287131e1558aef430404dfd3495665c` |
+| `data/reference/derived/features.csv` | `ca736eaeeb4425c6a2238bc0b7f72b5a11f6d32479b03cd9c07fca1963bda5b9` |
 | `data/reference/derived/lr_pairs.csv` | `121806a7429d3db20aaeb40cceace1ab569a9800d84dd64a39a42104e7b27581` |
 | `data/reference/derived/contacts.csv` | `5a6c64ff9a6536f754a054787299c8e4519d92011bd44de4a3b51010544cbebd` |
 | `data/reference/derived/contact_levels.csv` | `7e8aeb4dca7915461e65a9b3a6fa0123713082a2abd894833954d7a8c75b81a7` |

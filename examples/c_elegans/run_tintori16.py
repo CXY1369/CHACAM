@@ -14,34 +14,16 @@ import chacam
 MS_C_LABELS = {"MSa", "MSp", "Ca", "Cp"}
 
 
-def _assignments_for_fold(config, inputs, sample_id):
-    sample_values = inputs.cells["sample_id"].astype(str)
-    target_ids = inputs.cells.index[sample_values.eq(str(sample_id))].astype(str).tolist()
-    fit = chacam.fit_fold(inputs, config, sample_id)
-    target_expression = inputs.expression.loc[target_ids, fit.profiles.columns]
-    attention = chacam.attention(
-        target_expression,
-        fit.profiles,
-        config.attention.normalization,
-        config.attention.temperature,
-    )
-    assignment = chacam.greedy_assign(
-        attention.L,
-        chacam.capacities(fit.profiles.index, config.ambiguity_groups, config.assignment.mode),
-    )
-    return assignment, fit
-
-
-def _reference_check(config, inputs, sample_ids):
+def _reference_check(predictions, inputs, config, sample_ids):
     rows = []
     for sample_id in sample_ids:
-        assignment, _fit = _assignments_for_fold(config, inputs, sample_id)
+        fold_predictions = predictions.loc[predictions["sample_id"].astype(str).eq(str(sample_id))]
         for group in config.ambiguity_groups:
             for reference_identity in group.references:
                 assigned_ids = [
-                    str(cell_id)
-                    for cell_id, identity in assignment.labels.items()
-                    if str(identity) == reference_identity
+                    str(cell_id) for cell_id in fold_predictions.loc[
+                        fold_predictions["stage1_label"].astype(str).eq(reference_identity), "cell_id"
+                    ]
                 ]
                 if not assigned_ids:
                     assigned_ids = [None]
@@ -70,16 +52,17 @@ def _reference_check(config, inputs, sample_ids):
     )
 
 
-def _ms_c_stage1(config, inputs, sample_ids):
+def _ms_c_stage1(predictions, inputs, sample_ids):
     rows = []
     for sample_id in sample_ids:
-        assignment, _fit = _assignments_for_fold(config, inputs, sample_id)
-        target_ids = inputs.cells.index[inputs.cells["sample_id"].astype(str).eq(str(sample_id))].astype(str)
-        for cell_id in target_ids:
+        fold_predictions = predictions.loc[predictions["sample_id"].astype(str).eq(str(sample_id))]
+        for cell_id in fold_predictions["cell_id"].astype(str):
             observed_label = str(inputs.cells.loc[cell_id, "label"])
             if observed_label not in MS_C_LABELS:
                 continue
-            assigned_label = str(assignment.labels.loc[cell_id])
+            assigned_label = str(
+                fold_predictions.loc[fold_predictions["cell_id"].astype(str).eq(cell_id), "stage1_label"].item()
+            )
             rows.append(
                 {
                     "fold": str(sample_id),
@@ -137,6 +120,8 @@ def main() -> None:
     predictions = result.predictions
     print("status counts by fold:")
     print(predictions.groupby(["fold", "status"], sort=False).size().to_string())
+    print("status counts summary:")
+    print(predictions["status"].value_counts(sort=False).to_string())
     print("unresolved reasons:")
     reasons = predictions.loc[predictions["unresolved_reason"].astype(str) != ""]
     print(reasons["unresolved_reason"].value_counts(sort=False).to_string() if not reasons.empty else "<none>")
@@ -145,13 +130,13 @@ def main() -> None:
     print("metrics:")
     print(json.dumps(metrics, ensure_ascii=False, indent=2, sort_keys=True))
 
-    reference_check = _reference_check(config, inputs, sample_ids)
+    reference_check = _reference_check(predictions, inputs, config, sample_ids)
     reference_path = config.output_dir.parent / "c_elegans_tintori16_reference_check.csv"
     reference_check.to_csv(reference_path, index=False, lineterminator="\n")
     print("reference check:")
     print(reference_check.to_string(index=False))
 
-    ms_c = _ms_c_stage1(config, inputs, sample_ids)
+    ms_c = _ms_c_stage1(predictions, inputs, sample_ids)
     print("MS/C first-stage assignments:")
     print(ms_c.to_string(index=False) if not ms_c.empty else "<none>")
 

@@ -232,6 +232,7 @@ def _map_expression_rows(
                 }
             )
 
+    keep_rows.sort(key=lambda record: record["row"])
     final_names = [record["gene"] for record in keep_rows]
     if len(final_names) != len(set(final_names)):
         raise ValueError("final gene names are not unique")
@@ -300,7 +301,7 @@ def _assign_ms_c_labels(
     has_ms_c = bool(selected["raw_label"].astype(str).str.startswith(("MSx", "Cx")).any())
     if has_ms_c:
         if "F19F10.1" not in raw_expression.columns:
-            raise ValueError("Table S2 has no mapped F19F10.1 row for MS/C判定")
+            raise ValueError("Table S2 has no mapped F19F10.1 row for MS/C classification")
     if not has_ms_c:
         kept = selected.copy()
         kept["label"] = kept["raw_label"]
@@ -372,8 +373,8 @@ def convert_features(
         gene = mapped[1]
         if gene not in expression_genes:
             raise ValueError(f"mapped feature gene {gene!r} is missing from expression")
-        rows.append({"gene": gene, "source": row["source"]})
-    result = pd.DataFrame(rows, columns=["gene", "source"])
+        rows.append({"gene": gene})
+    result = pd.DataFrame(rows, columns=["gene"])
     if result["gene"].duplicated().any():
         raise ValueError("mapped feature genes are not unique")
     return result
@@ -587,6 +588,34 @@ def _write_csv(frame: pd.DataFrame, path: Path) -> None:
     frame.to_csv(path, index=False, lineterminator="\n")
 
 
+def _git_provenance(repo_root: Path) -> tuple[str | None, bool | None]:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None, None
+    return commit, bool(status.strip())
+
+
+def _source_path(path: Path, repo_root: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(repo_root.resolve()))
+    except ValueError:
+        return str(path)
+
+
 def write_conversion_outputs(
     result: dict[str, Any],
     output_dir: Path,
@@ -601,24 +630,17 @@ def write_conversion_outputs(
         _write_csv(result[name], path)
         derived_paths[name] = path
 
-    try:
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=script_path.resolve().parents[2],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
-        commit = "unknown"
+    repo_root = script_path.resolve().parents[2]
+    commit, dirty = _git_provenance(repo_root)
     report = dict(result["report"])
     report["source_files_sha256"] = {
-        name: {"path": str(path), "sha256": _sha256(path)} for name, path in raw_paths.items()
+        name: {"path": _source_path(path, repo_root), "sha256": _sha256(path)} for name, path in raw_paths.items()
     }
     report["derived_files_sha256"] = {
         name: _sha256(path) for name, path in derived_paths.items()
     }
     report["conversion_script_commit"] = commit
+    report["conversion_script_dirty"] = dirty
     report_path = output_dir / "conversion_report.json"
     with report_path.open("w", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2, sort_keys=True)

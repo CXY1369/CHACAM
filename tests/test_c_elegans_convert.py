@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
-from itertools import combinations
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -60,34 +61,6 @@ def make_contact_tables(pairs_by_level: dict[int, list[tuple[str, str]]] | None 
         level: pd.DataFrame(pairs, columns=["cell_i", "cell_j"])
         for level, pairs in pairs_by_level.items()
     }
-
-
-def make_s1_expression(
-    rows: list[tuple[str, str, float]],
-    extra_genes: list[tuple[str, float]] | None = None,
-):
-    s1 = pd.DataFrame(
-        [
-            {
-                "sample": sample,
-                "Usable Quality?": "Yes",
-            }
-            for sample, _gene, _value in rows
-        ]
-    )
-    cell_ids = [sample.split("_", 1)[0] for sample, _gene, _value in rows]
-    gene_values: dict[str, list[float]] = {"F19F10.1": []}
-    for sample, gene, value in rows:
-        if gene != "F19F10.1":
-            raise AssertionError("rows must use F19F10.1 for this helper")
-        gene_values["F19F10.1"].append(value)
-    for gene, value in extra_genes or [("SeqA", 3.0), ("SeqB", 4.0), ("SeqC", 5.0)]:
-        gene_values[gene] = [value + position for position in range(len(cell_ids))]
-    expression = pd.DataFrame(gene_values)
-    expression.insert(0, "transcript", expression.index if False else ["F19F10.1", *[gene for gene, _ in extra_genes or [("SeqA", 3.0), ("SeqB", 4.0), ("SeqC", 5.0)]]])
-    expression = expression.set_index("transcript").T
-    expression.insert(0, "cell_id", cell_ids)
-    return s1, expression
 
 
 def minimal_conversion_inputs(
@@ -190,6 +163,21 @@ def test_ms_c_assignment_uses_expression_and_not_x1_x2_numbering():
     }
 
 
+def test_ms_c_classifier_uses_raw_expression_when_numbering_is_identical():
+    result = minimal_conversion_inputs(
+        [
+            {"sample": "st1_MSx2_16-cell_r1", "Usable Quality?": "Yes"},
+            {"sample": "st2_MSx2_16-cell_r1", "Usable Quality?": "Yes"},
+        ],
+        {
+            "transcript": ["F19F10.1", "SeqA"],
+            "st1": [0.0, 3.0],
+            "st2": [100.0, 4.0],
+        },
+    )
+    assert result["cells"]["label"].tolist() == ["MSa", "MSp"]
+
+
 @pytest.mark.parametrize(
     ("values", "expected_kept"),
     [
@@ -246,6 +234,7 @@ def test_ms_c_groups_are_scoped_by_embryo_and_undetermined_groups_are_deleted():
     )
     result = minimal_conversion_inputs(samples, s2.to_dict(orient="list"))
     assert result["cells"]["cell_id"].tolist() == ["st7", "st8"]
+    assert result["expression"]["cell_id"].tolist() == ["st7", "st8"]
     assert result["cells"]["label"].tolist() == ["Cp", "Ca"]
     deleted = result["report"]["dropped_cells"]
     assert {item["cell_id"] for item in deleted} == {"st1", "st2", "st3", "st4", "st5", "st6"}
@@ -298,6 +287,31 @@ def test_gene_mapping_handles_sequence_names_case_fallback_nonstrings_and_dedupl
     )
     assert result["expression"].columns.tolist() == ["cell_id", "gene-a"]
     assert result["report"]["gene_mapping"]["duplicate_id_dropped"] == 1
+
+
+def test_gene_mapping_prefers_exact_alias_before_casefold_fallback():
+    module = converter_module()
+    queries = pd.DataFrame(
+        [
+            ["Abc", "WBGene1", "gene-one", "Abc"],
+            ["abc", "WBGene2", "gene-two", "abc"],
+        ],
+        columns=["Your Input", "WormBase Gene ID", "Public Name", "Sequence Name"],
+    )
+    aliases, public_names = module.build_gene_alias_map(queries)
+    assert module.map_gene_name("Abc", aliases, public_names) == ("WBGene1", "gene-one")
+
+
+def test_duplicate_gene_id_keeps_original_table_row_order():
+    module = converter_module()
+    expression = pd.DataFrame(
+        {
+            "transcript": ["SeqA", "SeqB", "gene-a"],
+            "st1": [1.0, 2.0, 3.0],
+        }
+    )
+    converted, _ = module.convert_expression_table(expression, make_queries(), ["st1"])
+    assert converted.columns.tolist() == ["cell_id", "gene-b", "gene-a"]
 
 
 @pytest.mark.parametrize(
@@ -353,10 +367,8 @@ def test_feature_mapping_renames_genes_and_rejects_missing_mapped_gene():
     aliases, public_names = module.build_gene_alias_map(make_queries())
     features = pd.DataFrame({"gene": ["SeqA", "SeqB"], "source": ["a", "b"]})
     mapped = module.convert_features(features, aliases, public_names, {"gene-a", "gene-b"})
-    assert mapped.to_dict("records") == [
-        {"gene": "gene-a", "source": "a"},
-        {"gene": "gene-b", "source": "b"},
-    ]
+    assert mapped.columns.tolist() == ["gene"]
+    assert mapped.to_dict("records") == [{"gene": "gene-a"}, {"gene": "gene-b"}]
     with pytest.raises(ValueError, match="missing from expression"):
         module.convert_features(
             pd.DataFrame({"gene": ["SeqC"], "source": ["c"]}),
@@ -364,6 +376,21 @@ def test_feature_mapping_renames_genes_and_rejects_missing_mapped_gene():
             public_names,
             {"gene-a"},
         )
+
+
+def test_convert_tables_features_have_only_gene_column():
+    result = minimal_conversion_inputs(
+        [
+            {"sample": "st1_Ea_16-cell_r1", "Usable Quality?": "Yes"},
+            {"sample": "st2_Ep_16-cell_r1", "Usable Quality?": "Yes"},
+        ],
+        {
+            "transcript": ["F19F10.1", "SeqA", "SeqB"],
+            "st1": [1.0, 3.0, 4.0],
+            "st2": [2.0, 4.0, 5.0],
+        },
+    )
+    assert result["features"].columns.tolist() == ["gene"]
 
 
 def test_lr_conversion_filters_both_non_lr_spellings_keeps_missing_expression_and_order():
@@ -385,6 +412,28 @@ def test_lr_conversion_filters_both_non_lr_spellings_keeps_missing_expression_an
     assert converted.columns.tolist() == ["ligand", "receptor", "pathway_name", "evidence", "annotation"]
     assert report["non_lr"] == 2
     assert report["unmapped"] == 1
+
+
+def test_lr_mapped_but_missing_expression_is_retained_and_reported():
+    module = converter_module()
+    aliases, public_names = module.build_gene_alias_map(make_queries())
+    lr = pd.DataFrame(
+        [["SeqA", "SeqB", "p", "e", "Cell-Cell Contact"]],
+        columns=["ligand", "receptor", "pathway_name", "evidence", "annotation"],
+    )
+    converted, report = module.convert_lr_pairs(lr, aliases, public_names, {"gene-a"})
+    assert converted.to_dict("records") == [
+        {
+            "ligand": "gene-a",
+            "receptor": "gene-b",
+            "pathway_name": "p",
+            "evidence": "e",
+            "annotation": "Cell-Cell Contact",
+        }
+    ]
+    assert report["mapped_but_missing_from_expression"] == [
+        {"row": 0, "ligand": "gene-a", "receptor": "gene-b"}
+    ]
 
 
 def test_contacts_use_max_level_canonical_pairs_exact_sources_and_sorted_output():
@@ -410,6 +459,24 @@ def test_contacts_use_max_level_canonical_pairs_exact_sources_and_sorted_output(
     assert contacts.loc[(contacts["identity_a"] == "ABala") & (contacts["identity_b"] == "ABalp"), "source"].item() == "cshaper_absent"
     assert not ((contacts["identity_a"] == "ABara") & (contacts["identity_b"] == "ABalp")).any()
     assert set(contacts["contact"]) == {0, 1}
+
+
+@pytest.mark.parametrize(
+    "contact_tables",
+    [
+        make_contact_tables({1: [("ABala'", "ABalp'")], 4: [("ABalp'", "ABala'")]}),
+        make_contact_tables({4: [("ABalp'", "ABala'")], 1: [("ABala'", "ABalp'")]}),
+    ],
+)
+def test_contacts_take_level_four_regardless_of_sheet_order(contact_tables):
+    module = converter_module()
+    overrides = pd.DataFrame(columns=["identity_a", "identity_b", "contact", "source"])
+    levels, contacts = module.convert_contacts(contact_tables, overrides)
+    pair = (levels["identity_a"] == "ABala") & (levels["identity_b"] == "ABalp")
+    contact_pair = (contacts["identity_a"] == "ABala") & (contacts["identity_b"] == "ABalp")
+    assert levels.loc[pair, "level"].item() == 4
+    assert contacts.loc[contact_pair, "contact"].item() == 1
+    assert contacts.loc[contact_pair, "source"].item() == "cshaper_sheet4"
 
 
 def test_contacts_reject_self_loops_duplicate_overrides_and_unknown_identities():
@@ -462,6 +529,68 @@ def test_same_input_conversion_is_byte_reproducible_and_config_loads(tmp_path):
     module.write_conversion_outputs(second, second_dir, {}, CONVERTER_PATH)
     for name in ("expression", "cells", "features", "lr_pairs", "contacts", "contact_levels"):
         assert (first_dir / f"{name}.csv").read_bytes() == (second_dir / f"{name}.csv").read_bytes()
+
+
+def test_conversion_report_uses_repo_relative_and_outside_source_paths(tmp_path):
+    module = converter_module()
+    result = minimal_conversion_inputs(
+        [
+            {"sample": "st1_Ea_16-cell_r1", "Usable Quality?": "Yes"},
+            {"sample": "st2_Ep_16-cell_r1", "Usable Quality?": "Yes"},
+        ],
+        {
+            "transcript": ["F19F10.1", "SeqA"],
+            "st1": [1.0, 3.0],
+            "st2": [2.0, 4.0],
+        },
+    )
+    inside = CONVERTER_PATH.parents[2] / "data" / "reference" / "MANIFEST.md"
+    outside = tmp_path / "outside.raw"
+    outside.write_bytes(b"outside")
+    report = module.write_conversion_outputs(
+        result,
+        tmp_path / "report",
+        {"inside": inside, "outside": outside},
+        CONVERTER_PATH,
+    )
+    assert report["source_files_sha256"]["inside"]["path"] == "data/reference/MANIFEST.md"
+    assert report["source_files_sha256"]["outside"]["path"] == str(outside)
+
+
+@pytest.mark.parametrize(
+    ("status_text", "expected_dirty"),
+    [("", False), (" M file", True)],
+)
+def test_git_provenance_uses_one_repo_root_and_reports_dirty_state(monkeypatch, status_text, expected_dirty):
+    module = converter_module()
+    repo_root = CONVERTER_PATH.parents[2]
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args == ["git", "rev-parse", "HEAD"]:
+            return SimpleNamespace(stdout="abc123\n")
+        if args == ["git", "status", "--porcelain"]:
+            return SimpleNamespace(stdout=status_text)
+        raise AssertionError(args)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    assert module._git_provenance(repo_root) == ("abc123", expected_dirty)
+    assert [call[0] for call in calls] == [
+        ["git", "rev-parse", "HEAD"],
+        ["git", "status", "--porcelain"],
+    ]
+    assert {call[1]["cwd"] for call in calls} == {repo_root}
+
+
+def test_git_provenance_returns_unknown_state_when_git_is_unavailable(monkeypatch):
+    module = converter_module()
+
+    def fake_run(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(1, "git")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    assert module._git_provenance(CONVERTER_PATH.parents[2]) == (None, None)
 
 
 def test_static_features_overrides_and_config_satisfy_contact_validation():
