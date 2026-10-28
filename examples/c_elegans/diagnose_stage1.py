@@ -397,6 +397,7 @@ def check_consistency(
     d2_stage1: pd.DataFrame,
     d3: pd.DataFrame,
     baseline_predictions: pd.DataFrame,
+    group_names: set[str],
 ) -> dict[str, bool]:
     """Compare freshly computed D2/D3 stage-one outputs with the M4 predictions."""
 
@@ -404,28 +405,57 @@ def check_consistency(
     d2_selected["cell_id"] = d2_selected["cell_id"].astype(str)
     baseline = baseline_predictions.copy()
     baseline["cell_id"] = baseline["cell_id"].astype(str)
-    baseline_stage1 = baseline.set_index("cell_id")["stage1_label"].astype(str)
-    d2_stage1_match = len(d2_selected) == len(baseline_stage1) and all(
-        baseline_stage1.get(cell_id, object()) == str(stage1_label)
-        for cell_id, stage1_label in zip(d2_selected["cell_id"], d2_selected["stage1_label"])
-    )
+    d2_cell_ids = d2_selected["cell_id"]
+    baseline_cell_ids = baseline["cell_id"]
+    d2_has_duplicates = d2_cell_ids.duplicated().any()
+    baseline_has_duplicates = baseline_cell_ids.duplicated().any()
+    same_stage1_cells = set(d2_cell_ids) == set(baseline_cell_ids)
+    stage1_match = False
+    if not d2_has_duplicates and not baseline_has_duplicates and same_stage1_cells:
+        d2_indexed = d2_selected.set_index("cell_id")
+        baseline_indexed = baseline.set_index("cell_id")
+        stage1_match = d2_indexed["stage1_label"].astype(str).equals(
+            baseline_indexed.reindex(d2_indexed.index)["stage1_label"].astype(str)
+        )
 
-    d3_stage1 = d3.loc[d3["refs"].eq("stage1")].copy()
-    baseline_indexed = baseline.set_index("cell_id")
-    d3_match = True
-    for row in d3_stage1.itertuples(index=False):
-        if row.cell_id not in baseline_indexed.index:
-            d3_match = False
-            break
-        expected = baseline_indexed.loc[row.cell_id]
-        if (
-            str(row.final_label) != str(expected["final_label"])
-            or str(row.status) != str(expected["status"])
-            or _normal_reason(row.unresolved_reason) != _normal_reason(expected["unresolved_reason"])
-        ):
-            d3_match = False
-            break
-    return {"stage1_match": bool(d2_stage1_match), "triangulation_match": bool(d3_match)}
+    d3_stage1 = d3.loc[d3["refs"].astype(str).eq("stage1")].copy()
+    expected_stage1 = d2_selected.loc[
+        d2_selected["stage1_label"].astype(str).isin({str(name) for name in group_names}),
+        ["cell_id", "stage1_label"],
+    ]
+    expected_pairs = set(zip(expected_stage1["cell_id"], expected_stage1["stage1_label"].astype(str)))
+    actual_pairs = set(zip(d3_stage1["cell_id"].astype(str), d3_stage1["group"].astype(str)))
+    complete_d3_set = (
+        not d3_stage1["cell_id"].astype(str).duplicated().any()
+        and actual_pairs == expected_pairs
+    )
+    triangulation_match = False
+    if complete_d3_set and d3_stage1.empty:
+        triangulation_match = True
+    elif complete_d3_set and not baseline_has_duplicates:
+        baseline_indexed = baseline.set_index("cell_id")
+        triangulation_match = True
+        for row in d3_stage1.itertuples(index=False):
+            if row.cell_id not in baseline_indexed.index:
+                triangulation_match = False
+                break
+            expected = baseline_indexed.loc[row.cell_id]
+            if (
+                str(row.final_label) != str(expected["final_label"])
+                or str(row.status) != str(expected["status"])
+                or _normal_reason(row.unresolved_reason) != _normal_reason(expected["unresolved_reason"])
+            ):
+                triangulation_match = False
+                break
+    return {"stage1_match": bool(stage1_match), "triangulation_match": bool(triangulation_match)}
+
+
+def require_consistency(consistency: dict[str, bool]) -> None:
+    """Stop before writing outputs when any consistency check fails."""
+
+    failed = [key for key, value in consistency.items() if not value]
+    if failed:
+        raise RuntimeError("consistency check failed: " + ", ".join(failed))
 
 
 def serialize_csv(frame: pd.DataFrame, columns: list[str]) -> str:
@@ -455,7 +485,9 @@ def main() -> None:
     d2_cells, d2_summary, d2_confusion = run_d2(inputs, config)
     d3, d3_wrong = run_d3(inputs, config, d2_cells)
     baseline = pd.read_csv(config.output_dir / "predictions.csv")
-    consistency = check_consistency(d2_cells, d3, baseline)
+    group_names = {str(group.name) for group in config.ambiguity_groups}
+    consistency = check_consistency(d2_cells, d3, baseline, group_names)
+    require_consistency(consistency)
 
     _write_outputs(
         output_dir,

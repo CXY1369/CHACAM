@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 
 SCRIPT_PATH = Path(__file__).parents[1] / "examples" / "c_elegans" / "diagnose_stage1.py"
@@ -191,10 +192,205 @@ def test_d3_uses_d2_stage1_even_when_baseline_predictions_are_different():
 
     d3_without_baseline, _ = module.run_d3(inputs, config, stage1)
     d3_with_different_baseline, _ = module.run_d3(inputs, config, stage1, baseline_predictions=baseline)
-    consistency = module.check_consistency(stage1, d3_with_different_baseline, baseline)
+    consistency = module.check_consistency(stage1, d3_with_different_baseline, baseline, {"Amb"})
 
     pd.testing.assert_frame_equal(d3_without_baseline, d3_with_different_baseline)
     assert consistency["triangulation_match"] is False
+
+
+def _consistency_fixture():
+    d2 = pd.DataFrame(
+        [
+            {"fold": "r1", "cell_id": "amb1", "observed_label": "Amb", "stage1_label": "Amb"},
+            {"fold": "r1", "cell_id": "amb2", "observed_label": "Amb", "stage1_label": "Amb"},
+            {"fold": "r1", "cell_id": "fine1", "observed_label": "X", "stage1_label": "X"},
+        ]
+    )
+    d3 = pd.DataFrame(
+        [
+            {
+                "fold": "r1",
+                "group": "Amb",
+                "refs": "stage1",
+                "cell_id": "amb1",
+                "final_label": "A",
+                "status": "resolved",
+                "unresolved_reason": "",
+            },
+            {
+                "fold": "r1",
+                "group": "Amb",
+                "refs": "stage1",
+                "cell_id": "amb2",
+                "final_label": "Amb",
+                "status": "unresolved",
+                "unresolved_reason": "",
+            },
+        ]
+    )
+    baseline = pd.DataFrame(
+        [
+            {
+                "cell_id": "amb1",
+                "stage1_label": "Amb",
+                "final_label": "A",
+                "status": "resolved",
+                "unresolved_reason": float("nan"),
+            },
+            {
+                "cell_id": "amb2",
+                "stage1_label": "Amb",
+                "final_label": "Amb",
+                "status": "unresolved",
+                "unresolved_reason": "",
+            },
+            {
+                "cell_id": "fine1",
+                "stage1_label": "X",
+                "final_label": "X",
+                "status": "assigned",
+                "unresolved_reason": "",
+            },
+        ]
+    )
+    return d2, d3, baseline, {"Amb"}
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("unchanged", {"stage1_match": True, "triangulation_match": True}),
+        ("stage1 rows empty", {"stage1_match": True, "triangulation_match": False}),
+        ("one ambiguity row removed", {"stage1_match": True, "triangulation_match": False}),
+        ("duplicate existing cell row", {"stage1_match": True, "triangulation_match": False}),
+        ("group changed", {"stage1_match": True, "triangulation_match": False}),
+        ("final_label only", {"stage1_match": True, "triangulation_match": False}),
+        ("status only", {"stage1_match": True, "triangulation_match": False}),
+        ("unresolved_reason only", {"stage1_match": True, "triangulation_match": False}),
+        ("fine stage1_label changed", {"stage1_match": False, "triangulation_match": True}),
+        ("fine baseline row removed", {"stage1_match": False, "triangulation_match": True}),
+    ],
+)
+def test_consistency_checks_complete_stage1_and_triangulation_sets(case, expected):
+    module = diagnose_module()
+    d2, d3, baseline, group_names = _consistency_fixture()
+    if case == "stage1 rows empty":
+        d3 = d3.iloc[0:0].copy()
+    elif case == "one ambiguity row removed":
+        d3 = d3.iloc[[0]].copy()
+    elif case == "duplicate existing cell row":
+        d3 = pd.concat([d3, d3.iloc[[0]]], ignore_index=True)
+    elif case == "group changed":
+        d3 = d3.copy()
+        d3.loc[d3.index[0], "group"] = "Other"
+    elif case == "final_label only":
+        d3 = d3.copy()
+        d3.loc[d3.index[0], "final_label"] = "B"
+    elif case == "status only":
+        d3 = d3.copy()
+        d3.loc[d3.index[0], "status"] = "unresolved"
+    elif case == "unresolved_reason only":
+        d3 = d3.copy()
+        d3.loc[d3.index[0], "unresolved_reason"] = "unresolved_tie"
+    elif case == "fine stage1_label changed":
+        baseline = baseline.copy()
+        baseline.loc[baseline["cell_id"].eq("fine1"), "stage1_label"] = "Y"
+    elif case == "fine baseline row removed":
+        baseline = baseline.loc[baseline["cell_id"].ne("fine1")].copy()
+
+    assert module.check_consistency(d2, d3, baseline, group_names) == expected
+
+
+def test_t2_reference_absent_without_assignment_is_not_false_assignment():
+    module = diagnose_module()
+    cells = pd.DataFrame(
+        {
+            "sample_id": ["r1"] * 6,
+            "label": ["R1", "X", "R2", "R3", "X", "R5"],
+        },
+        index=["c1", "c2", "c3", "c4", "c5", "c6"],
+    )
+    stage1 = pd.DataFrame(
+        {
+            "fold": ["r1"] * 6,
+            "cell_id": cells.index,
+            "observed_label": cells["label"].tolist(),
+            "stage1_label": ["R1", "R1", "X", "R3", "R4", "R5"],
+        }
+    )
+
+    metrics = module.summarize_stage1_metrics(
+        stage1, cells, [group(references=("R1", "R2", "R3", "R4", "R5", "R6"))]
+    )
+
+    assert metrics["ref_false_when_absent"] == 1
+
+
+def test_t3_wrong_reference_is_not_reported_when_group_is_unresolved():
+    module, inputs, config, stage1 = _d3_inputs_and_stage1()
+    unresolved_stage1 = stage1.assign(stage1_label=["R", "Amb", "Z", "Z"])
+
+    _d3, wrong = module.run_d3(inputs, config, unresolved_stage1)
+
+    assert wrong.empty
+
+
+@pytest.mark.parametrize(
+    ("consistency", "missing_key"),
+    [
+        ({"stage1_match": True, "triangulation_match": True}, None),
+        ({"stage1_match": False, "triangulation_match": True}, "stage1_match"),
+        ({"stage1_match": True, "triangulation_match": False}, "triangulation_match"),
+    ],
+)
+def test_require_consistency(consistency, missing_key):
+    module = diagnose_module()
+    if missing_key is None:
+        module.require_consistency(consistency)
+    else:
+        with pytest.raises(RuntimeError, match=missing_key):
+            module.require_consistency(consistency)
+
+
+def test_main_stops_before_writing_when_consistency_fails(monkeypatch, tmp_path):
+    module = diagnose_module()
+    output_dir = tmp_path / "runs" / "m4"
+    config = SimpleNamespace(output_dir=output_dir, ambiguity_groups=(group(),))
+    empty = pd.DataFrame()
+    write_called = False
+
+    monkeypatch.setattr(module.chacam, "load_config", lambda _path: config)
+    monkeypatch.setattr(
+        module.chacam,
+        "load_inputs",
+        lambda _config: SimpleNamespace(expression=empty, cells=empty),
+    )
+    monkeypatch.setattr(module, "build_d1_tables", lambda _expression, _cells: (empty, empty))
+    monkeypatch.setattr(module, "run_d2", lambda _inputs, _config: (empty, empty, empty))
+    monkeypatch.setattr(module, "run_d3", lambda _inputs, _config, _d2: (empty, empty))
+    monkeypatch.setattr(module.pd, "read_csv", lambda _path: empty)
+    monkeypatch.setattr(
+        module,
+        "check_consistency",
+        lambda _d2, _d3, _baseline, _group_names: {
+            "stage1_match": True,
+            "triangulation_match": False,
+        },
+    )
+
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal write_called
+        write_called = True
+        raise AssertionError("_write_outputs must not be called")
+
+    monkeypatch.setattr(module, "_write_outputs", fail_if_called)
+
+    with pytest.raises(RuntimeError, match="triangulation_match"):
+        module.main()
+
+    assert not write_called
+    diagnosis_dir = output_dir.parent / "c_elegans_tintori16_diagnosis"
+    assert not list(diagnosis_dir.iterdir())
 
 
 def test_d1_tables_include_zero_label_rows_and_count_positive_expression_values():
