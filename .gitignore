@@ -19,6 +19,7 @@ data/reference/*
 
 # Pipeline outputs
 runs/
+examples/synthetic/data/
 
 # Development process records and project log: kept locally, not published
 docs/

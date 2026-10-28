@@ -94,10 +94,10 @@ def binary_marker(
 
     if "gene" not in features.columns or "label" not in features.columns:
         raise ValueError("binary_marker requires gene and label columns in features")
-    available_genes = list(dict.fromkeys(str(gene) for gene in genes))
+    requested_genes = list(dict.fromkeys(str(gene) for gene in genes))
     feature_genes = list(dict.fromkeys(features["gene"].astype(str).tolist()))
-    used = [gene for gene in available_genes if gene in feature_genes]
-    missing = [gene for gene in feature_genes if gene not in available_genes]
+    used = [gene for gene in requested_genes if gene in feature_genes]
+    missing = [gene for gene in requested_genes if gene not in feature_genes]
     if not used:
         raise ValueError("no feature genes are present in the expression matrix")
     if isinstance(labels, pd.Series):

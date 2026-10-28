@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import pandas as pd
 import pytest
@@ -208,6 +209,66 @@ def test_at_least_two_samples_are_required(tmp_path):
     ))
     with pytest.raises(ValueError, match="sample_id"):
         load_inputs(load_config(_write_config(tmp_path)))
+
+
+def test_cells_cannot_use_reserved_unassigned_label(tmp_path):
+    _write_tables(tmp_path, cells=pd.DataFrame(
+        {"cell_id": ["c1", "c2", "c3", "c4"], "sample_id": ["s1", "s1", "s2", "s2"],
+         "label": ["unassigned", "R1", "Ax", "R2"]}
+    ))
+    with pytest.raises(ValueError, match="unassigned"):
+        load_inputs(load_config(_write_config(tmp_path)))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", "unassigned"),
+        ("candidates", ["unassigned", "A2"]),
+        ("references", ["unassigned", "R2"]),
+    ],
+)
+def test_ambiguity_group_parts_cannot_use_reserved_unassigned_name(tmp_path, field, value):
+    _write_tables(tmp_path)
+    config = _config_dict(tmp_path)
+    config["ambiguity_groups"][0][field] = value
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+
+    with pytest.raises(ValueError, match="unassigned"):
+        load_config(tmp_path / "config.yaml")
+
+
+@pytest.mark.parametrize("column", [
+    "reference_cell", "bucket_cell", "contribution", "sample_id", "group",
+    "reference_identity", "fold", "selection", "effect",
+])
+def test_lr_pairs_cannot_use_reserved_output_columns(tmp_path, column):
+    _write_tables(tmp_path, lr_pairs=pd.DataFrame(
+        {"ligand": ["g1"], "receptor": ["g2"], column: ["extra"]}
+    ))
+
+    with pytest.raises(ValueError, match=rf"reserved.*{re.escape(column)}"):
+        load_inputs(load_config(_write_config(tmp_path)))
+
+
+def test_reserved_name_check_is_case_sensitive(tmp_path):
+    _write_tables(tmp_path, cells=pd.DataFrame(
+        {"cell_id": ["c1", "c2", "c3", "c4"], "sample_id": ["s1", "s1", "s2", "s2"],
+         "label": ["Unassigned", "R1", "Ax", "R2"]}
+    ))
+    inputs = load_inputs(load_config(_write_config(tmp_path)))
+    assert "Unassigned" in inputs.cells["label"].tolist()
+
+
+def test_ambiguity_group_name_unassigned_case_variant_is_preserved(tmp_path):
+    _write_tables(tmp_path)
+    config = _config_dict(tmp_path)
+    config["ambiguity_groups"][0]["name"] = "Unassigned"
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+
+    loaded = load_config(tmp_path / "config.yaml")
+
+    assert loaded.ambiguity_groups[0].name == "Unassigned"
 
 
 def test_ambiguity_group_must_have_exactly_two_candidates(tmp_path):

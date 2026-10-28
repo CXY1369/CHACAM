@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .schema import RESERVED_LABEL
+
 
 @dataclass
 class AssignmentResult:
@@ -47,6 +49,8 @@ def greedy_assign(L: pd.DataFrame, capacities: dict[str, float | int]) -> Assign
 
     if not isinstance(L, pd.DataFrame):
         raise TypeError("L must be a pandas DataFrame")
+    if RESERVED_LABEL in [str(column) for column in L.columns]:
+        raise ValueError(f"{RESERVED_LABEL!r} is a reserved label name; rename the identity column")
     values = L.apply(pd.to_numeric, errors="coerce")
     if values.isna().any().any() or not np.isfinite(values.to_numpy(dtype=float)).all():
         raise ValueError("L contains non-finite values")
@@ -54,7 +58,7 @@ def greedy_assign(L: pd.DataFrame, capacities: dict[str, float | int]) -> Assign
     if missing_capacities:
         raise ValueError(f"capacities missing identities: {', '.join(map(str, missing_capacities))}")
     remaining = {identity: capacities[identity] for identity in L.columns}
-    labels = pd.Series("unassigned", index=L.index, dtype=object, name="label")
+    labels = pd.Series(RESERVED_LABEL, index=L.index, dtype=object, name="label")
     unassigned_rows = list(range(len(L.index)))
     trace_rows: list[dict[str, object]] = []
     order = 1

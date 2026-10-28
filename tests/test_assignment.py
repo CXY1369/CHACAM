@@ -2,6 +2,7 @@ import math
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from chacam.assignment import capacities, greedy_assign
 from chacam.schema import AmbiguityGroup
@@ -77,3 +78,18 @@ def test_exact_ties_are_deterministic_and_marked_in_trace():
     assert first.trace.iloc[0]["cell_id"] == "c1"
     assert bool(first.trace.iloc[0]["tie"])
     assert first.trace.iloc[0]["status"] == "tie"
+
+
+def test_greedy_assign_rejects_reserved_unassigned_identity_column():
+    l = pd.DataFrame([[1.0]], index=["c1"], columns=["unassigned"])
+
+    with pytest.raises(ValueError, match="unassigned"):
+        greedy_assign(l, {"unassigned": 1})
+
+
+def test_reserved_name_check_is_case_sensitive_for_assignment():
+    l = pd.DataFrame([[1.0]], index=["c1"], columns=["Unassigned"])
+
+    result = greedy_assign(l, {"Unassigned": 1})
+
+    assert result.labels.loc["c1"] == "Unassigned"

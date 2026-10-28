@@ -75,8 +75,22 @@ def test_binary_marker_uses_ambiguity_candidate_union_and_records_zero_labels():
     np.testing.assert_array_equal(profiles.loc["Ax"], [1, 1, 0])
     np.testing.assert_array_equal(profiles.loc["R1"], [0, 0, 1])
     np.testing.assert_array_equal(profiles.loc["NoMarker"], [0, 0, 0])
-    assert profiles.attrs["missing_feature_genes"] == ["missing"]
+    assert profiles.attrs["missing_feature_genes"] == []
     assert profiles.attrs["zero_labels"] == ["NoMarker"]
+
+
+def test_binary_marker_preserves_requested_gene_order_and_reports_requested_missing_genes():
+    features = pd.DataFrame(
+        {"gene": ["g2", "g1", "g3"], "label": ["A2", "A1", "R1"]}
+    )
+    labels = pd.Series(["Ax", "R1"], index=["c1", "c2"])
+    group = AmbiguityGroup(name="Ax", candidates=("A1", "A2"), references=("R1", "R2"))
+
+    profiles = binary_marker(features, labels, ["g3", "missing", "g1", "g2"], [group])
+
+    assert list(profiles.columns) == ["g3", "g1", "g2"]
+    np.testing.assert_array_equal(profiles.loc["Ax"], [0, 1, 1])
+    assert profiles.attrs["missing_feature_genes"] == ["missing"]
 
 
 def test_binary_marker_requires_label_column():

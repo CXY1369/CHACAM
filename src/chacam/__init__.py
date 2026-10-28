@@ -13,6 +13,7 @@ from .synthetic import SyntheticData, make_synthetic, write_synthetic
 from .assignment import AssignmentResult, capacities, greedy_assign
 from .attention import AttentionResult, attention, l1_normalize, softmax_normalize
 from .reference import ReferenceProfiles, binary_marker, training_mean
+from .pipeline import RunResult, run
 
 __all__ = [
     "AmbiguityGroup",
@@ -23,6 +24,7 @@ __all__ = [
     "RunConfig",
     "SyntheticData",
     "ReferenceProfiles",
+    "RunResult",
     "attention",
     "binary_marker",
     "capacities",
@@ -34,5 +36,6 @@ __all__ = [
     "make_synthetic",
     "softmax_normalize",
     "training_mean",
+    "run",
     "write_synthetic",
 ]

@@ -1,0 +1,27 @@
+provenance: framework_baseline
+seed: 0
+inputs:
+  expression: data/expression.csv
+  cells: data/cells.csv
+  features: data/features.csv
+  lr_pairs: data/lr_pairs.csv
+  contacts: data/contacts.csv
+  truth: data/truth.csv
+  expression_scale: counts
+reference:
+  mode: training_mean
+attention:
+  normalization: l1
+  temperature: 1.0
+assignment:
+  mode: unique
+cci:
+  transform: log1p
+  direction: both
+  lr_selection: given
+  top_k: 50
+ambiguity_groups:
+  - name: Ax
+    candidates: [A1, A2]
+    references: [R1, R2]
+output_dir: runs/synthetic_demo

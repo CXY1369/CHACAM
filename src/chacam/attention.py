@@ -67,7 +67,7 @@ def softmax_normalize(similarity: pd.DataFrame, temperature: float = 1.0) -> tup
 def _cosine_similarity(target: pd.DataFrame, reference: pd.DataFrame) -> tuple[pd.DataFrame, list[str], list[str], list[str]]:
     target = _frame(target, "target")
     reference = _frame(reference, "reference")
-    genes = [gene for gene in target.columns if gene in reference.columns]
+    genes = [gene for gene in reference.columns if gene in target.columns]
     if not genes:
         raise ValueError("target and reference have no overlapping genes")
     target_values = target.loc[:, genes].to_numpy(dtype=float)
