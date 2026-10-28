@@ -1,0 +1,34 @@
+provenance: framework_baseline
+seed: 0
+inputs:
+  expression: ../../data/reference/derived/expression.csv
+  cells: ../../data/reference/derived/cells.csv
+  features: ../../data/reference/derived/features.csv
+  lr_pairs: ../../data/reference/derived/lr_pairs.csv
+  contacts: ../../data/reference/derived/contacts.csv
+  expression_scale: log1p
+reference:
+  mode: training_mean
+attention:
+  normalization: l1
+assignment:
+  mode: unique
+cci:
+  transform: none
+  direction: both
+  lr_selection: train_topk
+  top_k: 50
+ambiguity_groups:
+  - name: ABalx
+    candidates: [ABala, ABalp]
+    references: [MSa]
+  - name: ABarx
+    candidates: [ABara, ABarp]
+    references: [Ca]
+  - name: ABplx
+    candidates: [ABpla, ABplp]
+    references: [Ea, Ep]
+  - name: ABprx
+    candidates: [ABpra, ABprp]
+    references: [Ep, P4]
+output_dir: ../../runs/c_elegans_tintori16
