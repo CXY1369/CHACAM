@@ -1,8 +1,9 @@
-"""Cell-pair communication scoring and M2 L-R selection."""
+"""Cell-pair communication scoring and L-R selection."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -160,5 +161,142 @@ def select_lr(lr_pairs: pd.DataFrame, mode: str) -> pd.DataFrame:
         selected["effect"] = np.nan
         return selected
     if mode == "train_topk":
-        raise NotImplementedError("train_topk is implemented in M3")
+        raise ValueError("train_topk requires training data; call train_topk")
     raise ValueError("mode must be given or train_topk")
+
+
+@dataclass
+class TopKSelection:
+    table: pd.DataFrame
+    n_contact_pairs: int
+    n_noncontact_pairs: int
+
+
+def _empty_topk_table(lr_pairs: pd.DataFrame) -> pd.DataFrame:
+    table = lr_pairs.iloc[0:0].copy()
+    table["selection"] = pd.Series(dtype=object)
+    table["effect"] = pd.Series(dtype=float)
+    return table
+
+
+def _contact_grid(contacts: pd.DataFrame) -> tuple[dict[str, int], np.ndarray]:
+    pair_values: dict[tuple[str, str], float] = {}
+    for _, row in contacts.iterrows():
+        key = tuple(sorted((str(row["identity_a"]), str(row["identity_b"]))))
+        pair_values[key] = float(row["contact"])
+    identities = sorted({name for pair in pair_values for name in pair})
+    index = {name: position for position, name in enumerate(identities)}
+    grid = np.full((len(identities), len(identities)), np.nan)
+    for (first, second), value in pair_values.items():
+        i = index[first]
+        j = index[second]
+        grid[i, j] = grid[j, i] = value
+    return index, grid
+
+
+def train_topk(
+    expression: pd.DataFrame,
+    cells: pd.DataFrame,
+    lr_pairs: pd.DataFrame,
+    contacts: pd.DataFrame,
+    group_names: Sequence[str],
+    transform: str,
+    top_k: int,
+) -> TopKSelection:
+    """Select L-R pairs by contact minus non-contact mean scores on training cells."""
+
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
+        raise ValueError("top_k must be a positive integer")
+    if transform not in {"none", "log1p"}:
+        raise ValueError("transform must be none or log1p")
+    if not isinstance(expression, pd.DataFrame) or not isinstance(cells, pd.DataFrame):
+        raise TypeError("expression and cells must be pandas DataFrames")
+    if not isinstance(lr_pairs, pd.DataFrame) or not isinstance(contacts, pd.DataFrame):
+        raise TypeError("lr_pairs and contacts must be pandas DataFrames")
+    missing_cell_columns = {"sample_id", "label"}.difference(cells.columns)
+    if missing_cell_columns:
+        raise ValueError(f"cells is missing required columns: {', '.join(sorted(missing_cell_columns))}")
+    if cells.index.duplicated().any():
+        raise ValueError("cells contains duplicate cell_id values")
+    expression_ids = set(expression.index.astype(str))
+    missing_cells = [str(cell_id) for cell_id in cells.index if str(cell_id) not in expression_ids]
+    if missing_cells:
+        raise ValueError(f"cell IDs are absent from expression: {', '.join(missing_cells[:5])}")
+    reserved = sorted({"selection", "effect"}.intersection(lr_pairs.columns))
+    if reserved:
+        raise ValueError(f"lr_pairs contains reserved output columns: {', '.join(reserved)}")
+    required = {"ligand", "receptor"}
+    missing_lr = required.difference(lr_pairs.columns)
+    if missing_lr:
+        raise ValueError(f"lr_pairs is missing required columns: {', '.join(sorted(missing_lr))}")
+    if "weight" not in lr_pairs.columns:
+        lr_pairs = lr_pairs.copy()
+        lr_pairs["weight"] = 1.0
+    if not {"identity_a", "identity_b", "contact"}.issubset(contacts.columns):
+        raise ValueError("contacts must contain identity_a, identity_b, and contact columns")
+    gene_names = set(expression.columns.astype(str))
+    for _, row in lr_pairs.iterrows():
+        ligand = str(row["ligand"])
+        receptor = str(row["receptor"])
+        if ligand not in gene_names or receptor not in gene_names:
+            raise ValueError(f"L-R genes are absent from expression: {ligand}, {receptor}")
+
+    ligands = lr_pairs["ligand"].astype(str).tolist()
+    receptors = lr_pairs["receptor"].astype(str).tolist()
+    weights = pd.to_numeric(lr_pairs["weight"], errors="coerce").to_numpy(dtype=float)
+    if np.isnan(weights).any() or not np.isfinite(weights).all():
+        raise ValueError("lr_pairs weight values must be finite numbers")
+    group_name_set = {str(name) for name in group_names}
+    identity_index, grid = _contact_grid(contacts)
+    n_identities = len(identity_index)
+    n_lr = len(lr_pairs)
+    contact_sum = np.zeros(n_lr, dtype=float)
+    noncontact_sum = np.zeros(n_lr, dtype=float)
+    n_contact_pairs = 0
+    n_noncontact_pairs = 0
+
+    for _sample_id, sample_cells in cells.groupby(cells["sample_id"].astype(str), sort=False):
+        labels = sample_cells["label"].astype(str)
+        fine_cells = sample_cells.index[ ~labels.isin(group_name_set)].astype(str)
+        if len(fine_cells) < 2:
+            continue
+        fine_labels = labels.loc[fine_cells].astype(str).to_numpy()
+        mapped = np.array([identity_index.get(label, n_identities) for label in fine_labels])
+        grid_ext = np.full((n_identities + 1, n_identities + 1), np.nan)
+        if n_identities:
+            grid_ext[:n_identities, :n_identities] = grid
+        values = grid_ext[mapped[:, None], mapped[None, :]]
+        contact_mask = np.isfinite(values) & (values > 0)
+        noncontact_mask = np.isfinite(values) & (values == 0)
+        np.fill_diagonal(contact_mask, False)
+        np.fill_diagonal(noncontact_mask, False)
+        ligand_values = _transform_values(expression.loc[fine_cells, ligands].to_numpy(dtype=float), transform)
+        receptor_values = _transform_values(expression.loc[fine_cells, receptors].to_numpy(dtype=float), transform)
+
+        def class_sum(mask: np.ndarray) -> np.ndarray:
+            mixed = ligand_values * (mask.astype(float) @ receptor_values)
+            return weights * mixed.sum(axis=0)
+
+        n_contact = int(contact_mask.sum() // 2)
+        n_noncontact = int(noncontact_mask.sum() // 2)
+        if n_contact:
+            contact_sum += class_sum(contact_mask)
+            n_contact_pairs += n_contact
+        if n_noncontact:
+            noncontact_sum += class_sum(noncontact_mask)
+            n_noncontact_pairs += n_noncontact
+
+    if n_contact_pairs == 0 or n_noncontact_pairs == 0:
+        return TopKSelection(
+            table=_empty_topk_table(lr_pairs),
+            n_contact_pairs=n_contact_pairs,
+            n_noncontact_pairs=n_noncontact_pairs,
+        )
+    effect = contact_sum / n_contact_pairs - noncontact_sum / n_noncontact_pairs
+    table = lr_pairs.copy()
+    table["selection"] = "train_topk"
+    table["effect"] = effect
+    table = table.loc[table["effect"] > 0]
+    table = table.sort_values("effect", ascending=False, kind="mergesort")
+    table = table.head(top_k).reset_index(drop=True)
+    return TopKSelection(table=table, n_contact_pairs=n_contact_pairs, n_noncontact_pairs=n_noncontact_pairs)

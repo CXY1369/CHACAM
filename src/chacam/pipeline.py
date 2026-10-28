@@ -14,9 +14,10 @@ import pandas as pd
 
 from .assignment import capacities, greedy_assign
 from .attention import attention
-from .cci import select_lr
+from .cci import select_lr, train_topk
+from .evaluation import compute_metrics
 from .reference import binary_marker, training_mean
-from .schema import RESERVED_LABEL, RunConfig, load_config, load_inputs
+from .schema import RESERVED_LABEL, Inputs, RunConfig, load_config, load_inputs
 from .triangulation import triangulate
 
 
@@ -24,6 +25,15 @@ from .triangulation import triangulate
 class RunResult:
     output_dir: Path
     predictions: pd.DataFrame
+
+
+@dataclass
+class FoldFit:
+    profiles: pd.DataFrame
+    lr_table: pd.DataFrame
+    missing_labels: list[str]
+    n_contact_pairs: int | None
+    n_noncontact_pairs: int | None
 
 
 def _config_echo(config: RunConfig) -> dict[str, object]:
@@ -99,59 +109,91 @@ def _reference_profiles(config: RunConfig, inputs, training_ids: list[str], expe
     raise ValueError(f"unsupported reference mode: {config.reference.mode}")
 
 
+def _fold_ids(cells: pd.DataFrame, sample_id: str) -> tuple[list[str], list[str]]:
+    sample_values = cells["sample_id"].astype(str)
+    cell_ids = cells.index.astype(str)
+    fold_mask = sample_values.to_numpy() == sample_id
+    return cell_ids[fold_mask].tolist(), cell_ids[~fold_mask].tolist()
+
+
+def fit_fold(inputs: Inputs, config: RunConfig, sample_id: str) -> FoldFit:
+    """Fit reference profiles and the fold L-R table from training cells only."""
+
+    _target_ids, training_ids = _fold_ids(inputs.cells, sample_id)
+    expected_labels = list(dict.fromkeys(inputs.cells["label"].astype(str).tolist()))
+    training_labels = inputs.cells.loc[training_ids, "label"].astype(str)
+    missing_labels = [label for label in expected_labels if label not in set(training_labels.tolist())]
+    profiles = _reference_profiles(config, inputs, training_ids, expected_labels)
+    if config.cci.lr_selection == "given":
+        return FoldFit(
+            profiles=profiles,
+            lr_table=select_lr(inputs.lr_pairs, "given"),
+            missing_labels=missing_labels,
+            n_contact_pairs=None,
+            n_noncontact_pairs=None,
+        )
+    if config.cci.lr_selection == "train_topk":
+        selected = train_topk(
+            inputs.expression,
+            inputs.cells.loc[training_ids],
+            inputs.lr_pairs,
+            inputs.contacts,
+            [group.name for group in config.ambiguity_groups],
+            config.cci.transform,
+            config.cci.top_k,
+        )
+        return FoldFit(
+            profiles=profiles,
+            lr_table=selected.table,
+            missing_labels=missing_labels,
+            n_contact_pairs=selected.n_contact_pairs,
+            n_noncontact_pairs=selected.n_noncontact_pairs,
+        )
+    raise ValueError(f"unsupported lr_selection: {config.cci.lr_selection}")
+
+
 def run(config: str | Path | RunConfig) -> RunResult:
-    """Run M2 leave-one-sample assignment and triangulation."""
+    """Run leave-one-sample assignment, triangulation, and metrics."""
 
     if isinstance(config, (str, Path)):
         config = load_config(config)
     if not isinstance(config, RunConfig):
         raise TypeError("config must be a path or RunConfig")
     inputs = load_inputs(config)
-    selected_lr = select_lr(inputs.lr_pairs, config.cci.lr_selection)
-    expected_labels = list(dict.fromkeys(inputs.cells["label"].astype(str).tolist()))
     sample_ids = list(dict.fromkeys(inputs.cells["sample_id"].astype(str).tolist()))
     invalid_sample_ids = [sample_id for sample_id in sample_ids if "/" in sample_id or "\\" in sample_id]
     if invalid_sample_ids:
         raise ValueError(f"sample_id cannot contain slash or backslash: {', '.join(invalid_sample_ids)}")
 
-    _clean_outputs(config.output_dir)
     group_by_name = {group.name: group for group in config.ambiguity_groups}
     assignment_traces: list[pd.DataFrame] = []
     evidence_frames: list[pd.DataFrame] = []
+    attention_by_fold: dict[str, object] = {}
+    lr_by_fold: dict[str, pd.DataFrame] = {}
     predictions_by_cell: dict[str, dict[str, object]] = {}
     fold_manifest: dict[str, dict[str, object]] = {}
 
-    sample_values = inputs.cells["sample_id"].astype(str)
-    cell_ids = inputs.cells.index.astype(str)
     for sample_id in sample_ids:
-        fold_mask = sample_values.to_numpy() == sample_id
-        target_ids = cell_ids[fold_mask].tolist()
-        training_ids = cell_ids[~fold_mask].tolist()
-        training_labels = inputs.cells.loc[training_ids, "label"].astype(str)
-        missing_labels = [
-            label for label in expected_labels if label not in set(training_labels.tolist())
-        ]
-        fold_manifest[sample_id] = {"missing_labels": missing_labels}
-        profiles = _reference_profiles(config, inputs, training_ids, expected_labels)
-        target_expression = inputs.expression.loc[target_ids, profiles.columns]
+        target_ids, _training_ids = _fold_ids(inputs.cells, sample_id)
+        fit = fit_fold(inputs, config, sample_id)
+        fold_manifest[sample_id] = {
+            "missing_labels": fit.missing_labels,
+            "n_selected_lr": int(len(fit.lr_table)),
+            "n_contact_pairs": fit.n_contact_pairs,
+            "n_noncontact_pairs": fit.n_noncontact_pairs,
+        }
+        target_expression = inputs.expression.loc[target_ids, fit.profiles.columns]
         attention_result = attention(
             target_expression,
-            profiles,
+            fit.profiles,
             config.attention.normalization,
             config.attention.temperature,
         )
-        np.savez(
-            config.output_dir / "attention" / f"{sample_id}.npz",
-            S=attention_result.S.to_numpy(dtype=float),
-            P_col=attention_result.P_col.to_numpy(dtype=float),
-            P_row=attention_result.P_row.to_numpy(dtype=float),
-            L=attention_result.L.to_numpy(dtype=float),
-            rows=np.asarray(attention_result.S.index.astype(str).tolist(), dtype=str),
-            cols=np.asarray(attention_result.S.columns.astype(str).tolist(), dtype=str),
-        )
+        attention_by_fold[sample_id] = attention_result
+        lr_by_fold[sample_id] = fit.lr_table
         assignment = greedy_assign(
             attention_result.L,
-            capacities(profiles.index, config.ambiguity_groups, config.assignment.mode),
+            capacities(fit.profiles.index, config.ambiguity_groups, config.assignment.mode),
         )
         trace = assignment.trace.copy()
         trace.insert(0, "fold", sample_id)
@@ -163,7 +205,7 @@ def run(config: str | Path | RunConfig) -> RunResult:
                 inputs.expression,
                 group,
                 inputs.contacts,
-                selected_lr,
+                fit.lr_table,
                 config.cci.transform,
                 config.cci.direction,
                 sample_id=sample_id,
@@ -198,7 +240,6 @@ def run(config: str | Path | RunConfig) -> RunResult:
                 "unresolved_reason": reason,
                 "provenance": config.provenance,
             }
-        selected_lr.to_csv(config.output_dir / "topk" / f"{sample_id}.csv", index=False)
 
     prediction_rows = [predictions_by_cell[str(cell_id)] for cell_id in inputs.cells.index.astype(str)]
     predictions = pd.DataFrame(
@@ -207,19 +248,44 @@ def run(config: str | Path | RunConfig) -> RunResult:
             "cell_id", "sample_id", "fold", "stage1_label", "final_label", "status", "unresolved_reason", "provenance"
         ],
     )
+    metrics = {
+        "provenance": config.provenance,
+        **compute_metrics(predictions, inputs.cells, config.ambiguity_groups, config.inputs.truth),
+    }
+
+    _clean_outputs(config.output_dir)
+    for sample_id, attention_result in attention_by_fold.items():
+        np.savez(
+            config.output_dir / "attention" / f"{sample_id}.npz",
+            S=attention_result.S.to_numpy(dtype=float),
+            P_col=attention_result.P_col.to_numpy(dtype=float),
+            P_row=attention_result.P_row.to_numpy(dtype=float),
+            L=attention_result.L.to_numpy(dtype=float),
+            rows=np.asarray(attention_result.S.index.astype(str).tolist(), dtype=str),
+            cols=np.asarray(attention_result.S.columns.astype(str).tolist(), dtype=str),
+        )
+        lr_by_fold[sample_id].to_csv(config.output_dir / "topk" / f"{sample_id}.csv", index=False)
     predictions.to_csv(config.output_dir / "predictions.csv", index=False)
 
     trace_columns = ["fold", "order", "cell_id", "identity", "L", "tie", "status"]
     assignment_trace = pd.concat(assignment_traces, ignore_index=True) if assignment_traces else pd.DataFrame(columns=trace_columns)
     assignment_trace.reindex(columns=trace_columns).to_csv(config.output_dir / "assignment_trace.csv", index=False)
+    lr_columns = []
+    for table in lr_by_fold.values():
+        lr_columns.extend(
+            column for column in table.columns if column not in {"reference_cell", "bucket_cell", "contribution"}
+        )
     evidence_columns = [
         "fold", "sample_id", "group", "reference_identity", "reference_cell", "bucket_cell",
-        *[column for column in selected_lr.columns if column not in {"reference_cell", "bucket_cell", "contribution"}],
+        *lr_columns,
         "contribution",
     ]
     evidence_columns = list(dict.fromkeys(evidence_columns))
     cci_evidence = pd.concat(evidence_frames, ignore_index=True) if evidence_frames else pd.DataFrame(columns=evidence_columns)
     cci_evidence.reindex(columns=evidence_columns).to_csv(config.output_dir / "cci_evidence.csv", index=False)
+    with (config.output_dir / "metrics.json").open("w", encoding="utf-8") as handle:
+        json.dump(metrics, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        handle.write("\n")
 
     manifest = {
         "config": _config_echo(config),

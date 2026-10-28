@@ -101,6 +101,16 @@ def test_load_config_requires_cci_transform(tmp_path):
         load_config(_write_config(tmp_path, **{"cci.transform": None}))
 
 
+def test_load_config_rejects_missing_truth_file(tmp_path):
+    _write_tables(tmp_path)
+    config = _config_dict(tmp_path)
+    config["inputs"]["truth"] = "missing_truth.csv"
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False))
+    with pytest.raises(ValueError, match="truth"):
+        load_config(path)
+
+
 @pytest.mark.parametrize("temperature", [0, -1])
 def test_load_config_rejects_nonpositive_softmax_temperature(tmp_path, temperature):
     _write_tables(tmp_path)
