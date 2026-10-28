@@ -59,33 +59,49 @@ def greedy_assign(L: pd.DataFrame, capacities: dict[str, float | int]) -> Assign
         raise ValueError(f"capacities missing identities: {', '.join(map(str, missing_capacities))}")
     remaining = {identity: capacities[identity] for identity in L.columns}
     labels = pd.Series(RESERVED_LABEL, index=L.index, dtype=object, name="label")
-    unassigned_rows = list(range(len(L.index)))
     trace_rows: list[dict[str, object]] = []
     order = 1
     matrix = values.to_numpy(dtype=float)
-    while unassigned_rows:
-        available_columns = [column_index for column_index, identity in enumerate(L.columns) if remaining[identity] > 0]
-        if not available_columns:
+    row_indices, column_indices = np.nonzero(matrix > 0)
+    item_values = matrix[row_indices, column_indices]
+    order_index = np.lexsort((column_indices, row_indices, -item_values))
+    items = [
+        (int(row_indices[index]), int(column_indices[index]), float(item_values[index]))
+        for index in order_index
+    ]
+    row_assigned = np.zeros(len(L.index), dtype=bool)
+    assigned_count = 0
+    start = 0
+    n_items = len(items)
+    n_rows = len(L.index)
+    while start < n_items and assigned_count < n_rows:
+        while start < n_items:
+            row_index, column_index, _value = items[start]
+            identity = L.columns[column_index]
+            if not row_assigned[row_index] and remaining[identity] > 0:
+                break
+            start += 1
+        if start >= n_items:
             break
-        available = []
-        for row_index in unassigned_rows:
-            for column_index in available_columns:
-                value = matrix[row_index, column_index]
-                if value > 0:
-                    available.append((row_index, column_index, value))
-        if not available:
-            break
-        maximum = max(item[2] for item in available)
-        tied = [item for item in available if np.isclose(item[2], maximum, rtol=1e-12, atol=1e-12)]
-        row_index, column_index, value = tied[0]
-        cell_id = L.index[row_index]
+        top = items[start][2]
+        tied: list[tuple[int, int, float]] = []
+        cursor = start
+        while cursor < n_items:
+            row_index, column_index, value = items[cursor]
+            if not np.isclose(value, top, rtol=1e-12, atol=1e-12):
+                break
+            identity = L.columns[column_index]
+            if not row_assigned[row_index] and remaining[identity] > 0:
+                tied.append((row_index, column_index, value))
+            cursor += 1
+        row_index, column_index, value = min(tied, key=lambda item: (item[0], item[1]))
         identity = L.columns[column_index]
         tie = len(tied) > 1
         labels.iloc[row_index] = identity
         trace_rows.append(
             {
                 "order": order,
-                "cell_id": cell_id,
+                "cell_id": L.index[row_index],
                 "identity": identity,
                 "L": float(value),
                 "tie": tie,
@@ -93,7 +109,8 @@ def greedy_assign(L: pd.DataFrame, capacities: dict[str, float | int]) -> Assign
             }
         )
         order += 1
-        unassigned_rows.remove(row_index)
+        row_assigned[row_index] = True
+        assigned_count += 1
         if not np.isinf(remaining[identity]):
             remaining[identity] -= 1
     trace = pd.DataFrame(trace_rows, columns=["order", "cell_id", "identity", "L", "tie", "status"])

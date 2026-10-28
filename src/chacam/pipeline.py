@@ -121,13 +121,12 @@ def run(config: str | Path | RunConfig) -> RunResult:
     predictions_by_cell: dict[str, dict[str, object]] = {}
     fold_manifest: dict[str, dict[str, object]] = {}
 
+    sample_values = inputs.cells["sample_id"].astype(str)
+    cell_ids = inputs.cells.index.astype(str)
     for sample_id in sample_ids:
-        target_ids = [
-            str(cell_id)
-            for cell_id in inputs.cells.index
-            if str(inputs.cells.loc[cell_id, "sample_id"]) == sample_id
-        ]
-        training_ids = [cell_id for cell_id in inputs.cells.index.astype(str) if cell_id not in set(target_ids)]
+        fold_mask = sample_values.to_numpy() == sample_id
+        target_ids = cell_ids[fold_mask].tolist()
+        training_ids = cell_ids[~fold_mask].tolist()
         training_labels = inputs.cells.loc[training_ids, "label"].astype(str)
         missing_labels = [
             label for label in expected_labels if label not in set(training_labels.tolist())

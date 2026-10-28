@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from chacam.cci import score_pairs, select_lr
+from chacam.cci import _numeric_expression, score_pairs, select_lr
 
 
 @pytest.fixture
@@ -141,3 +141,22 @@ def test_select_lr_train_topk_is_reserved_for_m3(cci_inputs):
     _, lr_pairs = cci_inputs
     with pytest.raises(NotImplementedError, match="implemented in M3"):
         select_lr(lr_pairs, "train_topk")
+
+
+def test_numeric_expression_fast_path_matches_apply_to_numeric():
+    expression = pd.DataFrame(
+        {
+            "float_gene": [1.5, 2.25, 3.0],
+            "int_gene": np.array([1, 2, 3], dtype=np.int32),
+            "bool_gene": [True, False, True],
+        },
+        index=["c1", "c2", "c3"],
+    )
+
+    result = _numeric_expression(expression)
+    legacy = expression.apply(pd.to_numeric, errors="coerce")
+    legacy.index = [str(value) for value in legacy.index]
+    legacy.columns = [str(value) for value in legacy.columns]
+
+    assert result.equals(legacy)
+    assert list(result.dtypes) == list(legacy.dtypes)

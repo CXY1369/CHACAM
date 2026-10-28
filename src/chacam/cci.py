@@ -8,10 +8,17 @@ import numpy as np
 import pandas as pd
 
 
+def _all_columns_numeric_dtype(expression: pd.DataFrame) -> bool:
+    return all(pd.api.types.is_numeric_dtype(dtype) for dtype in expression.dtypes)
+
+
 def _numeric_expression(expression: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(expression, pd.DataFrame):
         raise TypeError("expression must be a pandas DataFrame")
-    numeric = expression.apply(pd.to_numeric, errors="coerce")
+    if _all_columns_numeric_dtype(expression):
+        numeric = expression.copy()
+    else:
+        numeric = expression.apply(pd.to_numeric, errors="coerce")
     values = numeric.to_numpy(dtype=float)
     if numeric.isna().any().any() or not np.isfinite(values).all():
         raise ValueError("expression contains non-finite values")
@@ -38,15 +45,12 @@ def _transform_values(values: np.ndarray, transform: str) -> np.ndarray:
     raise ValueError("transform must be none or log1p")
 
 
-def score_pairs(
+def _prepare_score_pairs(
     expression: pd.DataFrame,
-    cell_pairs: Sequence[tuple[str, str]],
     lr_pairs: pd.DataFrame,
     transform: str,
     direction: str,
-) -> pd.DataFrame:
-    """Return one weighted contribution row for every requested pair and L-R pair."""
-
+) -> tuple[pd.DataFrame, list[dict[str, object]]]:
     expression = _numeric_expression(expression)
     if not isinstance(lr_pairs, pd.DataFrame):
         raise TypeError("lr_pairs must be a pandas DataFrame")
@@ -63,7 +67,6 @@ def score_pairs(
     if conflicts:
         raise ValueError(f"lr_pairs contains reserved output columns: {', '.join(conflicts)}")
 
-    expression_ids = set(expression.index.astype(str))
     gene_names = set(expression.columns.astype(str))
     lr_rows = lr_pairs.to_dict(orient="records")
     for lr_row in lr_rows:
@@ -74,38 +77,72 @@ def score_pairs(
         weight = pd.to_numeric(lr_row["weight"], errors="coerce")
         if pd.isna(weight) or not np.isfinite(float(weight)):
             raise ValueError("lr_pairs weight values must be finite numbers")
+    return expression, lr_rows
 
-    rows: list[dict[str, object]] = []
+
+def _require_expression_cells(expression: pd.DataFrame, cell_ids: Sequence[str]) -> None:
+    expression_ids = set(expression.index.astype(str))
+    missing_cells = [cell_id for cell_id in cell_ids if cell_id not in expression_ids]
+    if missing_cells:
+        raise ValueError(f"cell IDs are absent from expression: {', '.join(dict.fromkeys(missing_cells))}")
+
+
+def score_pairs(
+    expression: pd.DataFrame,
+    cell_pairs: Sequence[tuple[str, str]],
+    lr_pairs: pd.DataFrame,
+    transform: str,
+    direction: str,
+) -> pd.DataFrame:
+    """Return one weighted contribution row for every requested pair and L-R pair."""
+
+    expression, lr_rows = _prepare_score_pairs(expression, lr_pairs, transform, direction)
+    normalized_pairs: list[tuple[str, str]] = []
     for reference_cell_raw, bucket_cell_raw in cell_pairs:
         reference_cell = str(reference_cell_raw)
         bucket_cell = str(bucket_cell_raw)
-        if reference_cell not in expression_ids or bucket_cell not in expression_ids:
-            missing_cells = [cell for cell in (reference_cell, bucket_cell) if cell not in expression_ids]
-            raise ValueError(f"cell IDs are absent from expression: {', '.join(dict.fromkeys(missing_cells))}")
-        for lr_row in lr_rows:
-            ligand = str(lr_row["ligand"])
-            receptor = str(lr_row["receptor"])
-            weight = float(lr_row["weight"])
-            ref_values = _transform_values(
-                expression.loc[reference_cell, [ligand, receptor]].to_numpy(dtype=float), transform
-            )
-            bucket_values = _transform_values(
-                expression.loc[bucket_cell, [ligand, receptor]].to_numpy(dtype=float), transform
-            )
-            ref_to_cand = weight * ref_values[0] * bucket_values[1]
-            cand_to_ref = weight * bucket_values[0] * ref_values[1]
-            if direction == "ref_to_cand":
-                contribution = ref_to_cand
-            elif direction == "cand_to_ref":
-                contribution = cand_to_ref
-            else:
-                contribution = ref_to_cand + cand_to_ref
+        _require_expression_cells(expression, (reference_cell, bucket_cell))
+        normalized_pairs.append((reference_cell, bucket_cell))
+    return _score_pairs_vectorized(expression, normalized_pairs, lr_pairs, lr_rows, transform, direction)
+
+
+def _score_pairs_vectorized(
+    expression: pd.DataFrame,
+    cell_pairs: Sequence[tuple[str, str]],
+    lr_pairs: pd.DataFrame,
+    lr_rows: list[dict[str, object]],
+    transform: str,
+    direction: str,
+) -> pd.DataFrame:
+    columns = list(dict.fromkeys(["reference_cell", "bucket_cell", *lr_pairs.columns.tolist(), "contribution"]))
+    if not cell_pairs or not lr_rows:
+        return pd.DataFrame(columns=columns)
+
+    ligands = [str(row["ligand"]) for row in lr_rows]
+    receptors = [str(row["receptor"]) for row in lr_rows]
+    weights = np.asarray([float(row["weight"]) for row in lr_rows], dtype=float)
+    reference_cells = [pair[0] for pair in cell_pairs]
+    bucket_cells = [pair[1] for pair in cell_pairs]
+    lig_ref = _transform_values(expression.loc[reference_cells, ligands].to_numpy(dtype=float), transform)
+    rec_bucket = _transform_values(expression.loc[bucket_cells, receptors].to_numpy(dtype=float), transform)
+    lig_bucket = _transform_values(expression.loc[bucket_cells, ligands].to_numpy(dtype=float), transform)
+    rec_ref = _transform_values(expression.loc[reference_cells, receptors].to_numpy(dtype=float), transform)
+    ref_to_cand = (weights * lig_ref) * rec_bucket
+    cand_to_ref = (weights * lig_bucket) * rec_ref
+    if direction == "ref_to_cand":
+        contributions = ref_to_cand
+    elif direction == "cand_to_ref":
+        contributions = cand_to_ref
+    else:
+        contributions = ref_to_cand + cand_to_ref
+
+    rows: list[dict[str, object]] = []
+    for pair_index, (reference_cell, bucket_cell) in enumerate(cell_pairs):
+        for lr_index, lr_row in enumerate(lr_rows):
             row = {"reference_cell": reference_cell, "bucket_cell": bucket_cell}
             row.update(lr_row)
-            row["contribution"] = float(contribution)
+            row["contribution"] = float(contributions[pair_index, lr_index])
             rows.append(row)
-
-    columns = list(dict.fromkeys(["reference_cell", "bucket_cell", *lr_pairs.columns.tolist(), "contribution"]))
     return pd.DataFrame(rows, columns=columns)
 
 

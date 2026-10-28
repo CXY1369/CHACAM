@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from chacam.cci import score_pairs
 from chacam.schema import AmbiguityGroup
 from chacam.triangulation import triangulate
 
@@ -198,4 +199,77 @@ def test_triangulate_checks_reserved_evidence_columns_before_bucket_size_return(
     lr_table = pd.DataFrame({"ligand": ["lig"], "receptor": ["rec"], "weight": [1.0], "group": ["existing"]})
 
     with pytest.raises(ValueError, match="reserved.*group"):
+        triangulate(labels, expression, group, contacts, lr_table, "none", "both", sample_id="s")
+
+
+def _three_reference_inputs():
+    expression = pd.DataFrame(
+        {
+            "lig_a": [2.0, 3.0, 4.0, 0.0, 0.0],
+            "rec_a": [0.0, 0.0, 0.0, 5.0, 1.0],
+            "lig_b": [1.0, 2.0, 3.0, 0.0, 0.0],
+            "rec_b": [0.0, 0.0, 0.0, 6.0, 2.0],
+            "lig_c": [4.0, 1.0, 2.0, 0.0, 0.0],
+            "rec_c": [0.0, 0.0, 0.0, 3.0, 7.0],
+        },
+        index=["r1a", "r1b", "r1c", "u", "v"],
+    )
+    labels = pd.Series(["R1", "R1", "R1", "Ax", "Ax"], index=expression.index)
+    group = AmbiguityGroup(name="Ax", candidates=("A1", "A2"), references=("R1",))
+    contacts = pd.DataFrame({"identity_a": ["R1", "R1"], "identity_b": ["A1", "A2"], "contact": [1.0, 0.0]})
+    lr_table = pd.DataFrame(
+        {
+            "ligand": ["lig_a", "lig_b", "lig_c"],
+            "receptor": ["rec_a", "rec_b", "rec_c"],
+            "weight": [1.0, 0.5, 2.0],
+            "pathway": ["p1", "p2", "p3"],
+        }
+    )
+    return labels, expression, group, contacts, lr_table
+
+
+def test_triangulate_evidence_matches_per_reference_cell_score_pairs():
+    labels, expression, group, contacts, lr_table = _three_reference_inputs()
+    reference_cells = ["r1a", "r1b", "r1c"]
+    bucket_cells = ["u", "v"]
+
+    result = triangulate(labels, expression, group, contacts, lr_table, "none", "both", sample_id="heldout")
+    frames = []
+    for reference_cell in reference_cells:
+        pairs = [(reference_cell, bucket_cell) for bucket_cell in bucket_cells]
+        scored = score_pairs(expression, pairs, lr_table, "none", "both").copy()
+        scored["contribution"] = scored["contribution"] / len(reference_cells)
+        scored.insert(0, "sample_id", "heldout")
+        scored.insert(1, "group", "Ax")
+        scored.insert(2, "reference_identity", "R1")
+        frames.append(scored)
+    expected = pd.concat(frames, ignore_index=True)
+    expected = expected.reindex(columns=result.evidence.columns)
+
+    assert result.evidence.equals(expected)
+
+
+def test_triangulate_rejects_nan_in_unused_cell():
+    labels, expression, group, contacts, lr_table = _three_reference_inputs()
+    expression.loc["unused"] = [np.nan, 0.0, 0.0, 0.0, 0.0, 0.0]
+    labels.loc["unused"] = "B1"
+
+    with pytest.raises(ValueError, match="non-finite"):
+        triangulate(labels, expression, group, contacts, lr_table, "none", "both", sample_id="s")
+
+
+def test_triangulate_rejects_non_numeric_unused_gene():
+    labels, expression, group, contacts, lr_table = _three_reference_inputs()
+    expression["unused_gene"] = ["ok", "ok", "ok", "ok", "bad"]
+
+    with pytest.raises(ValueError, match="non-finite"):
+        triangulate(labels, expression, group, contacts, lr_table, "none", "both", sample_id="s")
+
+
+def test_triangulate_missing_lr_gene_is_value_error_not_key_error():
+    labels, expression, group, contacts, lr_table = _three_reference_inputs()
+    lr_table = lr_table.copy()
+    lr_table.loc[0, "ligand"] = "missing_lig"
+
+    with pytest.raises(ValueError, match="absent from expression"):
         triangulate(labels, expression, group, contacts, lr_table, "none", "both", sample_id="s")
