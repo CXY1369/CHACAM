@@ -111,8 +111,11 @@ def _reference_profiles(config: RunConfig, inputs, training_ids: list[str], expe
 
 def _fold_ids(cells: pd.DataFrame, sample_id: str) -> tuple[list[str], list[str]]:
     sample_values = cells["sample_id"].astype(str)
+    sample_key = str(sample_id)
+    if not sample_values.eq(sample_key).any():
+        raise ValueError(f"sample_id {sample_id!r} is absent from cells")
     cell_ids = cells.index.astype(str)
-    fold_mask = sample_values.to_numpy() == sample_id
+    fold_mask = sample_values.to_numpy() == sample_key
     return cell_ids[fold_mask].tolist(), cell_ids[~fold_mask].tolist()
 
 

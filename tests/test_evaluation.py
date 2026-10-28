@@ -189,3 +189,43 @@ def test_evaluate_rejects_truth_that_misses_predicted_cells():
 
     with pytest.raises(ValueError, match="s1_wrong"):
         evaluate(predictions, cells, [AX, BX], truth)
+
+
+def _evaluation_alignment_inputs():
+    predictions = pd.DataFrame(
+        [["c1", "s1", "s1", "R1", "R1", "assigned", ""]],
+        columns=["cell_id", "sample_id", "fold", "stage1_label", "final_label", "status", "unresolved_reason"],
+    )
+    cells = pd.DataFrame({"label": ["R1"]}, index=["c1"])
+    truth = pd.DataFrame({"true_label": ["R1"]}, index=["c1"])
+    return predictions, cells, truth
+
+
+@pytest.mark.parametrize("case", ["duplicate_predictions", "prediction_not_in_cells", "duplicate_cells", "duplicate_truth"])
+def test_evaluate_rejects_duplicate_or_misaligned_cell_ids(case):
+    predictions, cells, truth = _evaluation_alignment_inputs()
+    if case == "duplicate_predictions":
+        predictions = pd.concat([predictions, predictions], ignore_index=True)
+        match = r"predictions.*c1"
+    elif case == "prediction_not_in_cells":
+        predictions.loc[0, "cell_id"] = "missing_prediction"
+        truth = None
+        match = r"predictions.*missing_prediction|cells.*missing_prediction"
+    elif case == "duplicate_cells":
+        cells = pd.DataFrame({"label": ["R1", "R1", "R1"]}, index=["c1", "unused", "unused"])
+        match = r"cells.*unused"
+    else:
+        truth = pd.DataFrame({"true_label": ["R1", "R1"]}, index=["c1", "c1"])
+        match = r"truth.*c1"
+
+    with pytest.raises(ValueError, match=match):
+        evaluate(predictions, cells, [AX], truth)
+
+
+@pytest.mark.parametrize("duplicate_cells_index", [["c1", 0, "0"], ["c1", "unused", "unused"]])
+def test_evaluate_rejects_cells_ids_duplicate_after_string_conversion(duplicate_cells_index):
+    predictions, _cells, truth = _evaluation_alignment_inputs()
+    cells = pd.DataFrame({"label": ["R1"] * len(duplicate_cells_index)}, index=duplicate_cells_index)
+
+    with pytest.raises(ValueError, match=r"cells.*(0|unused)"):
+        evaluate(predictions, cells, [AX], truth)

@@ -84,11 +84,12 @@ def greedy_assign(L: pd.DataFrame, capacities: dict[str, float | int]) -> Assign
         if start >= n_items:
             break
         top = items[start][2]
+        tolerance = 1e-12 + 1e-12 * abs(top)
         tied: list[tuple[int, int, float]] = []
         cursor = start
         while cursor < n_items:
             row_index, column_index, value = items[cursor]
-            if not np.isclose(value, top, rtol=1e-12, atol=1e-12):
+            if abs(value - top) > tolerance:
                 break
             identity = L.columns[column_index]
             if not row_assigned[row_index] and remaining[identity] > 0:

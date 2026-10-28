@@ -114,12 +114,30 @@ def evaluate(
         raise TypeError("predictions and cells must be pandas DataFrames")
     frame = predictions.copy()
     frame["cell_id"] = frame["cell_id"].astype(str)
+    duplicate_predictions = frame.loc[frame["cell_id"].duplicated(keep=False), "cell_id"].unique().tolist()
+    if duplicate_predictions:
+        raise ValueError(f"predictions contains duplicate cell_id values: {', '.join(duplicate_predictions[:5])}")
     frame = frame.set_index("cell_id", drop=False)
     cells = cells.copy()
     cells.index = cells.index.astype(str)
+    duplicate_cells = cells.index[cells.index.duplicated()].unique().tolist()
+    if duplicate_cells:
+        raise ValueError(
+            f"cells contains duplicate cell_id values after string conversion: {', '.join(duplicate_cells[:5])}"
+        )
+    missing_cells = [cell_id for cell_id in frame.index if cell_id not in cells.index]
+    if missing_cells:
+        raise ValueError(
+            f"predictions contains cell_id values absent from cells: {', '.join(missing_cells[:5])}"
+        )
     if truth is not None:
         truth = truth.copy()
         truth.index = truth.index.astype(str)
+        duplicate_truth = truth.index[truth.index.duplicated()].unique().tolist()
+        if duplicate_truth:
+            raise ValueError(
+                f"truth contains duplicate cell_id values after string conversion: {', '.join(duplicate_truth[:5])}"
+            )
         missing = [cell_id for cell_id in frame.index if cell_id not in truth.index]
         if missing:
             raise ValueError(f"truth is missing cell_id values: {', '.join(missing[:5])}")

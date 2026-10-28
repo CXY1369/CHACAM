@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from chacam.pipeline import fit_fold, run
+from chacam.cci import train_topk
 from chacam.reference import training_mean
 from chacam.schema import load_config, load_inputs
 from chacam.synthetic import make_synthetic, write_synthetic
@@ -125,6 +126,55 @@ def test_pipeline_output_format_manifest_and_npz_are_readable(tmp_path):
     assert set(manifest["folds"]) == {"sample_001", "sample_002", "sample_003"}
 
 
+def test_given_mode_manifest_has_null_pair_counts_and_selected_count(tmp_path):
+    _data, config_path = _write_config(tmp_path, n_samples=3, lr_selection="given")
+
+    result = run(config_path)
+    manifest = json.loads((result.output_dir / "manifest.json").read_text(encoding="utf-8"))
+    selected_count = len(pd.read_csv(result.output_dir / "topk" / "sample_001.csv"))
+
+    for fold in manifest["folds"].values():
+        assert fold["n_selected_lr"] == selected_count
+        assert fold["n_contact_pairs"] is None
+        assert fold["n_noncontact_pairs"] is None
+
+
+def test_fit_fold_integer_sample_id_matches_string_and_excludes_leaveout_cells(tmp_path):
+    data, config_path = _write_config(tmp_path, n_samples=4, lr_selection="train_topk")
+    data.cells["sample_id"] = data.cells["sample_id"].str.extract(r"(\d+)")[0].astype(int)
+    data.cells.to_csv(tmp_path / "data" / "cells.csv", index=False)
+
+    config = load_config(config_path)
+    inputs = load_inputs(config)
+    fit_string = fit_fold(inputs, config, "1")
+    fit_integer = fit_fold(inputs, config, 1)
+    all_cells = train_topk(
+        inputs.expression,
+        inputs.cells,
+        inputs.lr_pairs,
+        inputs.contacts,
+        [group.name for group in config.ambiguity_groups],
+        config.cci.transform,
+        config.cci.top_k,
+    )
+
+    assert fit_integer.profiles.equals(fit_string.profiles)
+    assert fit_integer.lr_table.equals(fit_string.lr_table)
+    assert fit_integer.n_contact_pairs == fit_string.n_contact_pairs
+    assert fit_integer.n_noncontact_pairs == fit_string.n_noncontact_pairs
+    assert fit_integer.missing_labels == fit_string.missing_labels
+    assert fit_integer.n_contact_pairs < all_cells.n_contact_pairs
+
+
+def test_fit_fold_rejects_missing_integer_sample_id(tmp_path):
+    _data, config_path = _write_config(tmp_path, n_samples=4)
+    config = load_config(config_path)
+    inputs = load_inputs(config)
+
+    with pytest.raises(ValueError, match="99"):
+        fit_fold(inputs, config, 99)
+
+
 def test_attention_npz_rows_and_cols_match_fold_input_and_reference_order(tmp_path):
     data, config_path = _write_config(tmp_path, n_samples=3)
     run(config_path)
@@ -145,7 +195,8 @@ def test_attention_npz_rows_and_cols_match_fold_input_and_reference_order(tmp_pa
     assert saved["cols"].tolist() == profiles.index.astype(str).tolist()
 
 
-def test_pipeline_predictions_do_not_depend_on_truth_content(tmp_path):
+@pytest.mark.parametrize("lr_selection", ["given", "train_topk"])
+def test_pipeline_predictions_do_not_depend_on_truth_content(tmp_path, lr_selection):
     data = make_synthetic(seed=0, n_samples=3)
     write_synthetic(data, tmp_path / "data")
     shuffled = data.truth.copy()
@@ -154,7 +205,9 @@ def test_pipeline_predictions_do_not_depend_on_truth_content(tmp_path):
 
     outputs = []
     for truth in (None, "data/truth.csv", "data/truth_shuffled.csv"):
-        _, config_path = _write_config(tmp_path, n_samples=3, truth=truth, data=data)
+        _, config_path = _write_config(
+            tmp_path, n_samples=3, truth=truth, data=data, lr_selection=lr_selection
+        )
         result = run(config_path)
         outputs.append(_output_files(result.output_dir))
 
@@ -190,6 +243,7 @@ def test_pipeline_predictions_do_not_depend_on_truth_content(tmp_path):
     for name in ("fine_accuracy", "named_accuracy"):
         assert metrics[0]["pooled"][name] == {"numerator": None, "denominator": None, "value": None}
         assert metrics[1]["pooled"][name] != metrics[0]["pooled"][name]
+        assert metrics[1]["pooled"][name] != metrics[2]["pooled"][name]
 
 
 @pytest.mark.parametrize("reference_mode", ["training_mean", "binary_marker"])
@@ -340,6 +394,15 @@ def test_fit_fold_changes_when_training_expression_changes(tmp_path):
     after = fit_fold(inputs, config, "sample_001")
 
     assert not after.lr_table["effect"].equals(before.lr_table["effect"])
+
+
+def test_fit_fold_rejects_missing_sample_id(tmp_path):
+    _data, config_path = _write_config(tmp_path, n_samples=3)
+    config = load_config(config_path)
+    inputs = load_inputs(config)
+
+    with pytest.raises(ValueError, match="no_such_sample"):
+        fit_fold(inputs, config, "no_such_sample")
 
 
 def test_demo_loso_writes_all_outputs_and_topk_is_train_selected(tmp_path):

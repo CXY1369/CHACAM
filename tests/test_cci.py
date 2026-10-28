@@ -222,7 +222,8 @@ def _explicit_topk_pairs(cells, contacts, group_names, drop_ambiguity=True, requ
     return pairs
 
 
-def test_train_topk_matches_pairwise_score_pairs_and_exclusion_rules():
+@pytest.mark.parametrize("transform", ["none", "log1p"])
+def test_train_topk_matches_pairwise_score_pairs_and_exclusion_rules(transform):
     expression, cells, lr_pairs, contacts = _topk_example()
     group_names = ["Ax"]
     pairs = _explicit_topk_pairs(cells, contacts, group_names)
@@ -237,8 +238,8 @@ def test_train_topk_matches_pairwise_score_pairs_and_exclusion_rules():
 
     contact_pairs = [(left, right) for _sample, left, right, contact in pairs if contact > 0]
     noncontact_pairs = [(left, right) for _sample, left, right, contact in pairs if contact == 0]
-    contact_scores = score_pairs(expression, contact_pairs, lr_pairs, "none", "both")
-    noncontact_scores = score_pairs(expression, noncontact_pairs, lr_pairs, "none", "both")
+    contact_scores = score_pairs(expression, contact_pairs, lr_pairs, transform, "both")
+    noncontact_scores = score_pairs(expression, noncontact_pairs, lr_pairs, transform, "both")
     key = contact_scores["ligand"].astype(str) + "|" + contact_scores["receptor"].astype(str)
     expected_effect = (
         contact_scores.groupby(key, sort=False)["contribution"].mean()
@@ -248,13 +249,15 @@ def test_train_topk_matches_pairwise_score_pairs_and_exclusion_rules():
         )["contribution"].mean()
     )
 
-    selected = train_topk(expression, cells, lr_pairs, contacts, group_names, "none", top_k=10)
+    selected = train_topk(expression, cells, lr_pairs, contacts, group_names, transform, top_k=10)
 
     assert selected.n_contact_pairs == len(contact_pairs)
     assert selected.n_noncontact_pairs == len(noncontact_pairs)
     for _, row in selected.table.iterrows():
         key = f"{row['ligand']}|{row['receptor']}"
         np.testing.assert_allclose(row["effect"], expected_effect.loc[key])
+    selected_keys = {f"{row['ligand']}|{row['receptor']}" for _, row in selected.table.iterrows()}
+    assert selected_keys == set(expected_effect[expected_effect > 0].index)
 
 
 def test_train_topk_keeps_positive_effects_stable_order_and_top_k():
@@ -291,6 +294,48 @@ def test_train_topk_keeps_positive_effects_stable_order_and_top_k():
     assert list(selected.table["ligand"]) == ["lig_pos", "lig_tie1"]
     assert (selected.table["effect"] > 0).all()
     assert selected.table["selection"].tolist() == ["train_topk", "train_topk"]
+
+
+def test_train_topk_does_not_select_zero_effect_pairs():
+    expression, cells, lr_pairs, contacts = _topk_example()
+    expression = expression.copy()
+    expression["zero_lig"] = 1.0
+    expression["zero_rec"] = 1.0
+    lr_pairs = pd.concat(
+        [
+            lr_pairs,
+            pd.DataFrame({"ligand": ["zero_lig"], "receptor": ["zero_rec"], "weight": [1.0], "pathway": ["zero"]}),
+        ],
+        ignore_index=True,
+    )
+
+    selected = train_topk(expression, cells, lr_pairs, contacts, ["Ax"], "none", top_k=10)
+
+    assert "zero_lig" not in selected.table["ligand"].tolist()
+
+
+def test_train_topk_stable_sort_preserves_original_order_for_twenty_ties():
+    expression = pd.DataFrame(index=["s1_A1", "s1_B", "s1_A2", "s1_C"])
+    lr_rows = []
+    for index in range(20):
+        ligand = f"lig_{index:02d}"
+        receptor = f"rec_{index:02d}"
+        expression[ligand] = [1.0, 0.0, 1.0, 0.0]
+        expression[receptor] = [0.0, 1.0, 0.0, 0.0]
+        lr_rows.append({"ligand": ligand, "receptor": receptor, "weight": 1.0})
+    cells = pd.DataFrame(
+        {"sample_id": ["s1"] * 4, "label": ["A", "B", "A", "C"]},
+        index=expression.index,
+    )
+    lr_pairs = pd.DataFrame(lr_rows)
+    contacts = pd.DataFrame(
+        {"identity_a": ["A", "A"], "identity_b": ["B", "C"], "contact": [1.0, 0.0]}
+    )
+
+    selected = train_topk(expression, cells, lr_pairs, contacts, [], "none", top_k=10)
+
+    assert selected.table["ligand"].tolist() == [f"lig_{index:02d}" for index in range(10)]
+    assert selected.table["effect"].tolist() == [1.0] * 10
 
 
 @pytest.mark.parametrize(
@@ -364,3 +409,167 @@ def test_train_topk_rejects_invalid_cells_and_genes():
     bad_lr.loc[0, "ligand"] = "absent_gene"
     with pytest.raises(ValueError):
         train_topk(expression, cells, bad_lr, contacts, ["Ax"], "none", 2)
+
+
+def test_train_topk_ignores_non_finite_values_in_unused_genes():
+    expression, cells, lr_pairs, contacts = _integer_topk_inputs()
+    expression = expression.copy()
+    expression.index = expression.index.astype(str)
+    expression.columns = expression.columns.astype(str)
+    cells = cells.copy()
+    cells.index = cells.index.astype(str)
+    lr_pairs = lr_pairs.copy()
+    lr_pairs["ligand"] = lr_pairs["ligand"].astype(str)
+    lr_pairs["receptor"] = lr_pairs["receptor"].astype(str)
+    baseline = train_topk(expression, cells, lr_pairs, contacts, [], "none", 1)
+    expression["unused"] = np.nan
+
+    selected = train_topk(expression, cells, lr_pairs, contacts, [], "none", 1)
+
+    assert selected.table.equals(baseline.table)
+    assert selected.n_contact_pairs == baseline.n_contact_pairs
+    assert selected.n_noncontact_pairs == baseline.n_noncontact_pairs
+
+
+def test_train_topk_does_not_mutate_integer_input_tables():
+    expression, cells, lr_pairs, contacts = _integer_topk_inputs()
+    expression_before = expression.copy(deep=True)
+    cells_before = cells.copy(deep=True)
+    lr_pairs_before = lr_pairs.copy(deep=True)
+
+    train_topk(expression, cells, lr_pairs, contacts, [], "none", 1)
+
+    assert expression.equals(expression_before)
+    assert cells.equals(cells_before)
+    assert lr_pairs.equals(lr_pairs_before)
+    assert expression.index.tolist() == [0, 1, 2, 3]
+    assert expression.columns.tolist() == [0, 1]
+    assert cells.index.tolist() == [0, 1, 2, 3]
+    assert lr_pairs["ligand"].tolist() == [0]
+
+
+def _integer_topk_inputs():
+    expression = pd.DataFrame(
+        {0: [4.0, 0.0, 4.0, 0.0], 1: [0.0, 4.0, 0.0, 4.0]},
+        index=[0, 1, 2, 3],
+    )
+    cells = pd.DataFrame(
+        {"sample_id": ["s1"] * 4, "label": ["A", "B", "A", "C"]},
+        index=[0, 1, 2, 3],
+    )
+    lr_pairs = pd.DataFrame({"ligand": [0], "receptor": [1], "weight": [1.0]})
+    contacts = pd.DataFrame(
+        {"identity_a": ["A", "A"], "identity_b": ["B", "C"], "contact": [1.0, 0.0]}
+    )
+    return expression, cells, lr_pairs, contacts
+
+
+def test_train_topk_stringifies_integer_ids_and_genes_without_changing_results():
+    expression, cells, lr_pairs, contacts = _integer_topk_inputs()
+    string_expression = expression.copy()
+    string_expression.index = string_expression.index.astype(str)
+    string_expression.columns = string_expression.columns.astype(str)
+    string_cells = cells.copy()
+    string_cells.index = string_cells.index.astype(str)
+    string_lr_pairs = lr_pairs.copy()
+    string_lr_pairs["ligand"] = string_lr_pairs["ligand"].astype(str)
+    string_lr_pairs["receptor"] = string_lr_pairs["receptor"].astype(str)
+
+    integer_result = train_topk(expression, cells, lr_pairs, contacts, [], "none", 1)
+    string_result = train_topk(string_expression, string_cells, string_lr_pairs, contacts, [], "none", 1)
+
+    assert integer_result.table.equals(string_result.table)
+    assert integer_result.n_contact_pairs == string_result.n_contact_pairs
+    assert integer_result.n_noncontact_pairs == string_result.n_noncontact_pairs
+
+
+@pytest.mark.parametrize("duplicate_location", ["cells.index", "expression.index", "expression.columns"])
+def test_train_topk_rejects_names_that_duplicate_after_string_conversion(duplicate_location):
+    if duplicate_location == "cells.index":
+        expression = pd.DataFrame({"lig": [1.0], "rec": [1.0]}, index=["0"])
+        cells = pd.DataFrame({"sample_id": ["s1", "s1"], "label": ["A", "B"]}, index=[0, "0"])
+        lr_pairs = pd.DataFrame({"ligand": ["lig"], "receptor": ["rec"], "weight": [1.0]})
+    elif duplicate_location == "expression.index":
+        expression = pd.DataFrame({"lig": [1.0, 1.0], "rec": [1.0, 1.0]}, index=[0, "0"])
+        cells = pd.DataFrame({"sample_id": ["s1"], "label": ["A"]}, index=["0"])
+        lr_pairs = pd.DataFrame({"ligand": ["lig"], "receptor": ["rec"], "weight": [1.0]})
+    else:
+        expression = pd.DataFrame([[1.0, 1.0]], index=["c1"], columns=[0, "0"])
+        cells = pd.DataFrame({"sample_id": ["s1"], "label": ["A"]}, index=["c1"])
+        lr_pairs = pd.DataFrame({"ligand": ["0"], "receptor": ["0"], "weight": [1.0]})
+    contacts = pd.DataFrame({"identity_a": ["A"], "identity_b": ["B"], "contact": [1.0]})
+
+    with pytest.raises(ValueError, match="duplicate"):
+        train_topk(expression, cells, lr_pairs, contacts, [], "none", 1)
+
+
+@pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
+def test_train_topk_rejects_non_finite_values_in_used_expression(bad_value):
+    expression, cells, lr_pairs, contacts = _integer_topk_inputs()
+    expression = expression.astype(float)
+    expression.index = expression.index.astype(str)
+    expression.columns = expression.columns.astype(str)
+    cells = cells.copy()
+    cells.index = cells.index.astype(str)
+    lr_pairs = lr_pairs.copy()
+    lr_pairs["ligand"] = lr_pairs["ligand"].astype(str)
+    lr_pairs["receptor"] = lr_pairs["receptor"].astype(str)
+    expression.loc["0", "0"] = bad_value
+
+    with pytest.raises(ValueError, match="non-finite"):
+        train_topk(expression, cells, lr_pairs, contacts, [], "none", 1)
+
+
+@pytest.mark.parametrize("invalid_contact", [
+    {"identity_a": "A", "identity_b": "A", "contact": 1.0},
+    {"identity_a": "A", "identity_b": "B", "contact": -1.0},
+    {"identity_a": "A", "identity_b": "B", "contact": np.nan},
+    {"identity_a": "A", "identity_b": "B", "contact": np.inf},
+    {"identity_a": "B", "identity_b": "A", "contact": 0.0},
+])
+def test_train_topk_rejects_invalid_contacts(invalid_contact):
+    expression, cells, lr_pairs, contacts = _integer_topk_inputs()
+    expression = expression.copy()
+    expression.index = expression.index.astype(str)
+    expression.columns = expression.columns.astype(str)
+    cells = cells.copy()
+    cells.index = cells.index.astype(str)
+    lr_pairs = lr_pairs.copy()
+    lr_pairs["ligand"] = lr_pairs["ligand"].astype(str)
+    lr_pairs["receptor"] = lr_pairs["receptor"].astype(str)
+    if invalid_contact["contact"] == 0.0 and invalid_contact["identity_a"] == "B":
+        invalid_contact = {**invalid_contact, "contact": 2.0}
+    contacts = pd.concat([contacts, pd.DataFrame([invalid_contact])], ignore_index=True)
+
+    with pytest.raises(ValueError):
+        train_topk(expression, cells, lr_pairs, contacts, [], "none", 1)
+
+
+def test_train_topk_matches_directly_normalized_contacts():
+    expression, cells, lr_pairs, contacts = _topk_example()
+    from chacam.schema import _validate_contacts
+
+    normalized = _validate_contacts(contacts, ())
+    direct = train_topk(expression, cells, lr_pairs, contacts, ["Ax"], "none", 10)
+    normalized_result = train_topk(expression, cells, lr_pairs, normalized, ["Ax"], "none", 10)
+
+    assert direct.table.equals(normalized_result.table)
+    assert direct.n_contact_pairs == normalized_result.n_contact_pairs
+    assert direct.n_noncontact_pairs == normalized_result.n_noncontact_pairs
+
+
+def test_score_pairs_reports_only_the_first_missing_cell_pair():
+    expression = pd.DataFrame({"lig": [1.0, 1.0], "rec": [1.0, 1.0]}, index=["c1", "c2"])
+    lr_pairs = pd.DataFrame({"ligand": ["lig"], "receptor": ["rec"], "weight": [1.0]})
+
+    with pytest.raises(ValueError) as error:
+        score_pairs(
+            expression,
+            [("missing_first", "c1"), ("missing_second", "c2")],
+            lr_pairs,
+            "none",
+            "both",
+        )
+
+    assert "missing_first" in str(error.value)
+    assert "missing_second" not in str(error.value)

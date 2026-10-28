@@ -94,6 +94,7 @@ def triangulate(
     tie_found = False
     stage1_values = stage1_labels.astype(str)
     prepared_expression: pd.DataFrame | None = None
+    expression_ids: set[str] | None = None
     lr_rows: list[dict[str, object]] = []
     lr_genes: list[str] = []
     for reference_identity in references:
@@ -113,6 +114,7 @@ def triangulate(
         negative_candidate = next(candidate for candidate in candidates if candidate != positive_candidate)
         if prepared_expression is None:
             prepared_expression, lr_rows = _prepare_score_pairs(expression, lr_table, transform, direction)
+            expression_ids = set(prepared_expression.index.astype(str))
             lr_genes = list(
                 dict.fromkeys([str(row["ligand"]) for row in lr_rows] + [str(row["receptor"]) for row in lr_rows])
             )
@@ -122,7 +124,7 @@ def triangulate(
             for bucket_cell in bucket_cells
         ]
         for reference_cell, bucket_cell in pairs:
-            _require_expression_cells(prepared_expression, (reference_cell, bucket_cell))
+            _require_expression_cells(prepared_expression, (reference_cell, bucket_cell), expression_ids)
         sliced = prepared_expression.loc[[*reference_cells, *bucket_cells], lr_genes]
         scored = _score_pairs_vectorized(sliced, pairs, lr_table, lr_rows, transform, direction).copy()
         scored["contribution"] = scored["contribution"] / len(reference_cells)
