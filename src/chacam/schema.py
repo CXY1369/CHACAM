@@ -185,6 +185,8 @@ def load_config(path: str | Path) -> RunConfig:
     if truth_value is not None:
         truth_candidate = Path(str(truth_value)).expanduser()
         truth_path = (config_path.parent / truth_candidate).resolve() if not truth_candidate.is_absolute() else truth_candidate
+        if not truth_path.exists():
+            raise ValueError(f"truth path does not exist: {truth_path}")
     expression_scale = inputs_raw.get("expression_scale")
     if expression_scale is not None:
         expression_scale = _enum(expression_scale, {"counts", "cpm", "log", "log1p"}, "inputs.expression_scale")

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .cci import score_pairs
+from .cci import _prepare_score_pairs, _require_expression_cells, _score_pairs_vectorized
 from .schema import AmbiguityGroup
 
 
@@ -93,6 +93,10 @@ def triangulate(
     votes: list[dict[str, str]] = []
     tie_found = False
     stage1_values = stage1_labels.astype(str)
+    prepared_expression: pd.DataFrame | None = None
+    expression_ids: set[str] | None = None
+    lr_rows: list[dict[str, object]] = []
+    lr_genes: list[str] = []
     for reference_identity in references:
         reference_cells = [str(cell_id) for cell_id in stage1_values.index[stage1_values == reference_identity]]
         if not reference_cells:
@@ -108,17 +112,26 @@ def triangulate(
             )
         positive_candidate = positive_candidates[0]
         negative_candidate = next(candidate for candidate in candidates if candidate != positive_candidate)
-
-        pair_rows: list[pd.DataFrame] = []
-        for reference_cell in reference_cells:
-            pairs = [(reference_cell, bucket_cell) for bucket_cell in bucket_cells]
-            scored = score_pairs(expression, pairs, lr_table, transform, direction).copy()
-            scored["contribution"] = scored["contribution"] / len(reference_cells)
-            scored.insert(0, "sample_id", sample_id)
-            scored.insert(1, "group", group_name)
-            scored.insert(2, "reference_identity", reference_identity)
-            pair_rows.append(scored)
-        reference_evidence = pd.concat(pair_rows, ignore_index=True)
+        if prepared_expression is None:
+            prepared_expression, lr_rows = _prepare_score_pairs(expression, lr_table, transform, direction)
+            expression_ids = set(prepared_expression.index.astype(str))
+            lr_genes = list(
+                dict.fromkeys([str(row["ligand"]) for row in lr_rows] + [str(row["receptor"]) for row in lr_rows])
+            )
+        pairs = [
+            (reference_cell, bucket_cell)
+            for reference_cell in reference_cells
+            for bucket_cell in bucket_cells
+        ]
+        for reference_cell, bucket_cell in pairs:
+            _require_expression_cells(prepared_expression, (reference_cell, bucket_cell), expression_ids)
+        sliced = prepared_expression.loc[[*reference_cells, *bucket_cells], lr_genes]
+        scored = _score_pairs_vectorized(sliced, pairs, lr_table, lr_rows, transform, direction).copy()
+        scored["contribution"] = scored["contribution"] / len(reference_cells)
+        scored.insert(0, "sample_id", sample_id)
+        scored.insert(1, "group", group_name)
+        scored.insert(2, "reference_identity", reference_identity)
+        reference_evidence = scored
         evidence_frames.append(reference_evidence)
         totals = reference_evidence.groupby("bucket_cell", sort=False)["contribution"].sum()
         first_score = float(totals.loc[bucket_cells[0]])
