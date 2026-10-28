@@ -16,7 +16,7 @@ from .assignment import capacities, greedy_assign
 from .attention import attention
 from .cci import select_lr
 from .reference import binary_marker, training_mean
-from .schema import RunConfig, load_config, load_inputs
+from .schema import RESERVED_LABEL, RunConfig, load_config, load_inputs
 from .triangulation import triangulate
 
 
@@ -176,8 +176,8 @@ def run(config: str | Path | RunConfig) -> RunResult:
 
         for cell_id in target_ids:
             stage1_label = str(assignment.labels.loc[cell_id])
-            if stage1_label == "unassigned":
-                final_label = "unassigned"
+            if stage1_label == RESERVED_LABEL:
+                final_label = RESERVED_LABEL
                 status = "unassigned"
                 reason = ""
             elif stage1_label in group_by_name:

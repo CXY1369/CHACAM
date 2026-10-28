@@ -260,6 +260,17 @@ def test_reserved_name_check_is_case_sensitive(tmp_path):
     assert "Unassigned" in inputs.cells["label"].tolist()
 
 
+def test_ambiguity_group_name_unassigned_case_variant_is_preserved(tmp_path):
+    _write_tables(tmp_path)
+    config = _config_dict(tmp_path)
+    config["ambiguity_groups"][0]["name"] = "Unassigned"
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+
+    loaded = load_config(tmp_path / "config.yaml")
+
+    assert loaded.ambiguity_groups[0].name == "Unassigned"
+
+
 def test_ambiguity_group_must_have_exactly_two_candidates(tmp_path):
     _write_tables(tmp_path)
     config = _config_dict(tmp_path)

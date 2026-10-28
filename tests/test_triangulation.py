@@ -188,3 +188,14 @@ def test_triangulate_rejects_reserved_evidence_columns_with_clear_error(column):
     assert "reserved" in message
     assert column in message
     assert "cannot insert" not in message
+
+
+def test_triangulate_checks_reserved_evidence_columns_before_bucket_size_return():
+    expression = pd.DataFrame({"lig": [1.0], "rec": [1.0]}, index=["u"])
+    labels = pd.Series(["Ax"], index=["u"])
+    group = AmbiguityGroup(name="Ax", candidates=("A1", "A2"), references=("R1",))
+    contacts = pd.DataFrame({"identity_a": ["R1", "R1"], "identity_b": ["A1", "A2"], "contact": [1.0, 0.0]})
+    lr_table = pd.DataFrame({"ligand": ["lig"], "receptor": ["rec"], "weight": [1.0], "group": ["existing"]})
+
+    with pytest.raises(ValueError, match="reserved.*group"):
+        triangulate(labels, expression, group, contacts, lr_table, "none", "both", sample_id="s")

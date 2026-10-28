@@ -58,7 +58,7 @@ def greedy_assign(L: pd.DataFrame, capacities: dict[str, float | int]) -> Assign
     if missing_capacities:
         raise ValueError(f"capacities missing identities: {', '.join(map(str, missing_capacities))}")
     remaining = {identity: capacities[identity] for identity in L.columns}
-    labels = pd.Series("unassigned", index=L.index, dtype=object, name="label")
+    labels = pd.Series(RESERVED_LABEL, index=L.index, dtype=object, name="label")
     unassigned_rows = list(range(len(L.index)))
     trace_rows: list[dict[str, object]] = []
     order = 1
