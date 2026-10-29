@@ -52,6 +52,9 @@ def test_state_matching_requires_every_identity_to_match_the_x_pattern():
     matched = module.match_s5_state("ABpxa", rows)
     assert matched["identities"] == ("ABpla", "ABpra")
     assert matched["label_kind"] == "equivalence"
+    assert module.match_s5_state(
+        "ABpxa", [s4_row("18", ("ABpra", "ABpla"), 9)]
+    )["state_id"] == "18"
     assert module.match_s5_state("Cx", rows)["identities"] == ("Ca", "Cp")
     assert module.match_s5_state("Daa", rows)["label_kind"] == "equivalence"
 
@@ -96,11 +99,23 @@ def test_cell_count_validation_records_only_the_registered_ms_exception():
         s4_row("21", ("Ea",), 2),
     ]
 
-    report = module.validate_cell_counts(rows, ["20", "20", "20", "21", "21"])
-    assert report["exceptions"] == [{"state_id": "20", "declared": 12, "observed": 3}]
+    report = module.validate_cell_counts(rows, ["20"] * 6 + ["21", "21"])
+    assert report["exceptions"] == [{"state_id": "20", "declared": 12, "observed": 6}]
+
+    with pytest.raises(ValueError, match="state 20"):
+        module.validate_cell_counts(rows, ["20"] * 5 + ["21", "21"])
+
+    with pytest.raises(ValueError, match="state 20"):
+        module.validate_cell_counts([s4_row("20", ("MSa", "MSp"), 11)], ["20"] * 6)
+
+    with pytest.raises(ValueError, match="state 20"):
+        module.validate_cell_counts([s4_row("20", ("MSa", "MSx"), 12)], ["20"] * 6)
 
     with pytest.raises(ValueError, match="state 21"):
-        module.validate_cell_counts(rows, ["20", "20", "20", "21"])
+        module.validate_cell_counts([s4_row("21", ("MSa", "MSp"), 12)], ["21"] * 6)
+
+    with pytest.raises(ValueError, match="state 21"):
+        module.validate_cell_counts(rows, ["20"] * 6 + ["21"])
 
 
 def test_embryo_ids_follow_the_table_s5_to_s1_mapping_rule():
@@ -149,6 +164,13 @@ def test_out_of_range_cell_removes_its_entire_embryo_and_keeps_closed_boundaries
     boundary = s5.iloc[[1, 2]].copy()
     boundary.loc[boundary["GEO entry"] == "GSM2", "Embryo ID"] = "6c"
     kept, report = module.filter_misaligned_cells(boundary, counts)
+    assert report["out_of_range_cells"] == []
+    assert len(kept) == 2
+
+    lower_boundary = s5.iloc[[0, 2]].copy()
+    lower_boundary.loc[lower_boundary["GEO entry"] == "GSM1", "Number of transcripts"] = 95
+    lower_boundary.loc[lower_boundary["GEO entry"] == "GSM1", "Embryo ID"] = "7c"
+    kept, report = module.filter_misaligned_cells(lower_boundary, counts)
     assert report["out_of_range_cells"] == []
     assert len(kept) == 2
 

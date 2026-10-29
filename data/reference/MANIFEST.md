@@ -107,10 +107,11 @@
 | 28 | 6 | 132 | 57 | 75 | 20,109 | 280 |
 | 51 | 5 | 204 | 101 | 103 | 20,109 | 280 |
 
-派生 CSV 的 SHA-256 以及逐细胞剔除、基因映射、L–R 和 CShaper 明细见各期 `conversion_report.json`。Cole-Yanai 的表达是 `log1p(CPM)`，Tintori 的表达是 `log1p(RPKM)`；两者不作分数大小或准确率的跨数据集比较。
+派生表不是完整的 `chacam` 输入集，不能用 `load_inputs` 读取。派生 CSV 的 SHA-256 以及逐细胞剔除、基因映射、L–R 和 CShaper 明细见各期 `conversion_report.json`。Cole-Yanai 的表达是 `log1p(CPM)`，Tintori 的表达是 `log1p(RPKM)`；两者不作分数大小或准确率的跨数据集比较。
 
 ### 已知局限
 
 - Table S5 是 S1 采集细胞的已注释子集，不把 S1 的 `# Cells Collected` 当作 S5 细胞数；只要求每个 S5 胚胎计数不超过对应 S1 行。
 - 计数比值的整胚胎剔除规则和阈值是预注册的输入处理；CShaper 只有 51 期的 `Cap`、`MSapp`、`MSppp` 在表中缺失，相关组合不写入 `contacts.csv`。
 - Cole-Yanai 与 Tintori 使用不同的表达单位，M6 只在各数据集内部按固定预处理回答是否存在信号。
+- 细胞身份是原作者按已知标记基因对表达聚类后注释的，不是谱系追踪；姐妹细胞的真值本身依赖表达。

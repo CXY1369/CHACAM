@@ -205,6 +205,85 @@ def test_no_bucket_is_unresolved_and_excluded_from_denominators():
     assert summary.loc[summary["mode"].eq("oracle"), "evaluable"].iat[0] == 0
 
 
+def test_no_reference_with_empty_topk_short_circuits_to_no_reference():
+    module = benchmark_module()
+    cells, expression, _lr_pairs, _contacts = signal_inputs()
+    empty_contacts = pd.DataFrame(columns=["identity_a", "identity_b", "contact"])
+    empty_lr = pd.DataFrame(columns=["ligand", "receptor", "weight"])
+    rows = module.run_decision(
+        dataset="synthetic",
+        stage=15,
+        pair=("Ea", "Ep"),
+        fold="e1",
+        cells=cells,
+        expression=expression,
+        lr_pairs=empty_lr,
+        contacts=empty_contacts,
+        group_names=(),
+    )
+    assert len(rows) == 2
+    assert {row["mode"] for row in rows} == {"oracle", "swap_control"}
+    assert all(row["status"] == "unresolved" for row in rows)
+    assert all(row["unresolved_reason"] == "unresolved_no_reference" for row in rows)
+    assert all(row["n_lr"] == 0 for row in rows)
+    assert all(row["references"] == "" for row in rows)
+    assert all(row["final_x"] == row["group"] and row["final_y"] == row["group"] for row in rows)
+    assert all(row["correct"] is None for row in rows)
+
+
+def test_no_reference_with_nonempty_topk_does_not_triangulate(monkeypatch):
+    module = benchmark_module()
+    cells, expression, lr_pairs, contacts = signal_inputs()
+    contacts = contacts.loc[~contacts["identity_b"].isin(["Ea", "Ep"])].reset_index(drop=True)
+    calls = []
+    original_select = module.select_fold_topk
+
+    def wrapped_select(*args, **kwargs):
+        calls.append(1)
+        return original_select(*args, **kwargs)
+
+    def fail_triangulate(*args, **kwargs):
+        raise AssertionError("triangulate must not be called without references")
+
+    monkeypatch.setattr(module, "select_fold_topk", wrapped_select)
+    monkeypatch.setattr(module, "triangulate", fail_triangulate)
+    rows = module.run_decision(
+        dataset="synthetic",
+        stage=15,
+        pair=("Ea", "Ep"),
+        fold="e1",
+        cells=cells,
+        expression=expression,
+        lr_pairs=lr_pairs,
+        contacts=contacts,
+        group_names=(),
+    )
+    assert len(calls) == 1
+    assert len(rows) == 2
+    assert all(row["unresolved_reason"] == "unresolved_no_reference" for row in rows)
+    assert all(row["n_lr"] == 1 for row in rows)
+    assert all(row["final_x"] == row["group"] and row["final_y"] == row["group"] for row in rows)
+
+
+def test_reference_with_empty_topk_remains_no_lr():
+    module = benchmark_module()
+    cells, expression, _lr_pairs, contacts = signal_inputs()
+    empty_lr = pd.DataFrame(columns=["ligand", "receptor", "weight"])
+    rows = module.run_decision(
+        dataset="synthetic",
+        stage=15,
+        pair=("Ea", "Ep"),
+        fold="e1",
+        cells=cells,
+        expression=expression,
+        lr_pairs=empty_lr,
+        contacts=contacts,
+        group_names=(),
+    )
+    assert all(row["status"] == "unresolved" for row in rows)
+    assert all(row["unresolved_reason"] == "unresolved_no_lr" for row in rows)
+
+
 def test_decision_binomial_tail_matches_six_of_eight():
     module = benchmark_module()
     rows = []
@@ -263,6 +342,17 @@ def test_embryo_sign_test_uses_wins_losses_and_excludes_ties():
     assert (row["embryo_wins"], row["embryo_losses"], row["embryo_ties"], row["embryo_no_resolved"]) == (1, 4, 0, 0)
     assert row["sign_test_p"] == pytest.approx(31 / 32)
     assert set(per_embryo["outcome"]) == {"win", "loss"}
+
+    two_wins_one_tie = pd.DataFrame(
+        [
+            dict(rows[0], fold="w1", correct=1),
+            dict(rows[0], fold="w2", correct=1),
+            dict(rows[0], fold="tie", correct=1),
+            dict(rows[0], fold="tie", correct=0),
+        ]
+    )
+    two_wins_summary, _ = module.summarize_decisions(two_wins_one_tie)
+    assert two_wins_summary.iloc[0]["sign_test_p"] == pytest.approx(1 / 4)
 
     tie = pd.DataFrame(rows[:2]).copy()
     tie.loc[0, "fold"] = "tie"

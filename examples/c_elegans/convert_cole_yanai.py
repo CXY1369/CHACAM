@@ -140,7 +140,12 @@ def validate_cell_counts(
         actual = int(observed.get(state_id, 0))
         if actual == declared:
             continue
-        if tuple(row["identities"]) == ("MSa", "MSp"):
+        if (
+            state_id == "20"
+            and tuple(row["identities"]) == ("MSa", "MSp")
+            and declared == 12
+            and actual == 6
+        ):
             exceptions.append({"state_id": state_id, "declared": declared, "observed": actual})
             continue
         raise ValueError(

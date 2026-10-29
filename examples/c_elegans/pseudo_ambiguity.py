@@ -233,6 +233,23 @@ def _run_mode(
 
     cell_x, cell_y = str(cell_x_values[0]), str(cell_y_values[0])
     group_name = f"{first}+{second}"
+    if not references:
+        return _decision_row(
+            dataset=dataset,
+            stage=stage,
+            pair=pair,
+            fold=fold,
+            mode=mode,
+            cell_x=cell_x,
+            cell_y=cell_y,
+            references=references,
+            n_lr=len(selected_lr),
+            status="unresolved",
+            reason="unresolved_no_reference",
+            final_x=group_name,
+            final_y=group_name,
+            correct=None,
+        )
     group = AmbiguityGroup(name=group_name, candidates=pair, references=references)
     merged = cells.copy()
     merged["label"] = merged["label"].astype(str)
