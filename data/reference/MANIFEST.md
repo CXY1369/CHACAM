@@ -72,3 +72,46 @@
 | `data/reference/derived/lr_pairs.csv` | `121806a7429d3db20aaeb40cceace1ab569a9800d84dd64a39a42104e7b27581` |
 | `data/reference/derived/contacts.csv` | `5a6c64ff9a6536f754a054787299c8e4519d92011bd44de4a3b51010544cbebd` |
 | `data/reference/derived/contact_levels.csv` | `7e8aeb4dca7915461e65a9b3a6fa0123713082a2abd894833954d7a8c75b81a7` |
+
+## Cole-Yanai M6 参考数据
+
+### 原始文件
+
+下列文件由 `Paper/Source Data and Reference Papers/Cole-Yanai_singleCell/Supplemental Information/` 逐字节复制到 `data/reference/cole_yanai/`。该目录及其派生目录由 `.gitignore` 排除，转换脚本只读取这些路径和本 MANIFEST 中列出的 M4 文件。
+
+| 文件 | SHA-256 |
+|---|---|
+| `GSE83523_CE_blastomeres_rawcounts.txt.gz` | `86c8c102c0e24ad84c2e8393218edd6caf6825ee8461238507dc61758cebc201` |
+| `GSE83523_family.soft.gz` | `799a33a0732700cb1a6ce2d4ac1d5307d13742ec070dd35746bdbb6c746da984` |
+| `Cell state assignments.xlsx` | `b2e8a7887cafcaa7b20fb7dc6d27f2deb5aab7d258a212ba521b65ed21614078` |
+| `Inferred cell states.docx` | `488940547bcde695333cd0b41bf628620b9ad54852448c85d07f56880c3520df` |
+| `Characteristics of the dataset.docx` | `8fe42173e3db2f3e9cc42ab07c3d2be38bd6440c60f544bd787bfe324bbbf41f` |
+
+### C1 转换
+
+命令：`.venv/bin/python examples/c_elegans/convert_cole_yanai.py`
+
+输出目录为 `data/reference/derived_cole_yanai/stage{15,28,51}/`，包含 `cells.csv`、`expression.csv`、`lr_pairs.csv`、`contacts.csv`、`contact_levels.csv` 和 `conversion_report.json`。转换规则如下：
+
+1. 期来自 Table S1 的 `Intended Stage`；GSM 与样本名逐项核对 SOFT 的 `!Sample_title`；Table S5 的胚胎 ID 按 `P0n → 1.n`、`{数字}c{序号} → {数字}.{序号}` 规范化后与 38 个 S1 胚胎行核对。
+2. 对每个 GSM 计算 Table S5 转录本数除以原始计数矩阵整列和；区间为闭区间 `[0.95, 1.06]`。任一细胞越界则剔除整个胚胎。当前数据剔除 4c3、4c5、7c1、8c1、8c2，共 25 个越界细胞和 26 个被剔除细胞。
+3. Table S4 先去掉期标注再切分身份；Table S5 状态按完整 `x` 通配模式匹配。仅允许 `Abpxpaa → ABpxpaa`、`P0 → P_0`、`MSxaap` 和 `MSxpaa` 四条预注册修正；状态名必须恰好命中一行。唯一细胞数例外是第 20 行 `MSa MSp`，Table S4 为 12、Table S5 为 6。
+4. 表达矩阵使用 M4 的基因别名映射和重复 WormBase ID 处理；文库大小用映射前全部原始行；写出 `log1p(CPM)`。不生成 `features.csv`。
+5. L–R 使用 M4 的 `convert_lr_pairs`；CShaper 四表按无向身份对取最高等级，Sheet4 写接触 1、四表未检出写 0、仅 Sheet1–3 出现的不确定组合不写入；缺失身份及其相关组合写入转换报告。
+
+三期规模和转换摘要：
+
+| 期 | 胚胎 | 细胞 | fine | equivalence | 最终基因 | L–R |
+|---:|---:|---:|---:|---:|---:|---:|
+| 15 | 5 | 59 | 28 | 31 | 20,109 | 280 |
+| 28 | 6 | 132 | 57 | 75 | 20,109 | 280 |
+| 51 | 5 | 204 | 101 | 103 | 20,109 | 280 |
+
+派生表不是完整的 `chacam` 输入集，不能用 `load_inputs` 读取。派生 CSV 的 SHA-256 以及逐细胞剔除、基因映射、L–R 和 CShaper 明细见各期 `conversion_report.json`。Cole-Yanai 的表达是 `log1p(CPM)`，Tintori 的表达是 `log1p(RPKM)`；两者不作分数大小或准确率的跨数据集比较。
+
+### 已知局限
+
+- Table S5 是 S1 采集细胞的已注释子集，不把 S1 的 `# Cells Collected` 当作 S5 细胞数；只要求每个 S5 胚胎计数不超过对应 S1 行。
+- 计数比值的整胚胎剔除规则和阈值是预注册的输入处理；CShaper 只有 51 期的 `Cap`、`MSapp`、`MSppp` 在表中缺失，相关组合不写入 `contacts.csv`。
+- Cole-Yanai 与 Tintori 使用不同的表达单位，M6 只在各数据集内部按固定预处理回答是否存在信号。
+- 细胞身份是原作者按已知标记基因对表达聚类后注释的，不是谱系追踪；姐妹细胞的真值本身依赖表达。
